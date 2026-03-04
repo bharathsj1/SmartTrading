@@ -1,22 +1,21 @@
 """
 Capital.com TradingView Webhook Bridge (NETTING-SAFE)
 
-✅ Fixes your issue where a BUY after a SELL just closes the short (netting),
-   by doing: CLOSE opposite positions FIRST → then OPEN new position.
+Fixes the issue where a BUY after a SELL just closes the short (netting),
+by doing: CLOSE opposite positions FIRST → then OPEN new position.
 
-✅ Accepts TradingView JSON payload with:
-   - secret, identifier
-   - event: "entry"/"close" (or omitted)
-   - action/side: BUY/SELL/LONG/SHORT
-   - instrument (your key like "metal_gold_spot") OR epic (Capital market epic)
-   - quantity/qty
-   - sl/tp (levels) OR stopLevel/limitLevel (levels)
+Accepts TradingView JSON payload:
+- secret, identifier
+- event: "entry"/"open"/"close"/"exit" (or omitted)
+- action/side: BUY/SELL/LONG/SHORT
+- instrument (your key like "metal_gold_spot") OR epic (Capital market epic)
+- quantity/qty
+- sl/tp (levels) OR stopLevel/limitLevel (levels)
 
-✅ Places MARKET order and (optionally) attaches stopLevel/limitLevel.
-
-IMPORTANT SECURITY:
-- You pasted real credentials (API key + password) in chat.
-  Rotate them immediately and move them to environment variables.
+Notes:
+- Uses RLock (re-entrant) to avoid deadlock with nested calls.
+- Adds a short "settle wait" after closes to avoid race conditions.
+- Rotating credentials: DO NOT hardcode API key/password in code. Use env vars.
 """
 
 import json
@@ -27,7 +26,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -42,7 +41,7 @@ CAPITAL_BASE_URL = os.getenv(
 CAPITAL_API_KEY = os.getenv("CAPITAL_API_KEY", "Jm8K70gi5PNGHWpb")
 CAPITAL_PASSWORD = os.getenv("CAPITAL_PASSWORD", "Livepresent@26")
 CAPITAL_IDENTIFIER = os.getenv("CAPITAL_IDENTIFIER", "bharath.sj1@gmail.com")
-CAPITAL_API_VERSION = "1"
+CAPITAL_API_VERSION = os.getenv("CAPITAL_API_VERSION", "1").strip()
 
 WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1").strip()
 WEB_PORT = int(os.getenv("WEB_PORT", "8080").strip())
@@ -124,7 +123,8 @@ if DEFAULT_INSTRUMENT not in INSTRUMENTS:
 # ---------------------------
 class CapitalTradingService:
     def __init__(self) -> None:
-        self._lock = Lock()
+        # RLock avoids deadlock when methods call other locked methods.
+        self._lock = RLock()
         self._http = requests.Session()
         self._api_key = CAPITAL_API_KEY
         self._password = CAPITAL_PASSWORD
@@ -403,6 +403,8 @@ class CapitalTradingService:
         if quantity <= 0:
             return {"ok": False, "error": "invalid_quantity", "message": "Quantity must be greater than zero."}
 
+        # NOTE: This method is called inside close_opposites_then_open while lock is held.
+        # Because we use RLock, re-entrant lock is safe.
         with self._lock:
             self._apply_runtime_credentials(identifier=identifier)
 
@@ -515,8 +517,9 @@ class CapitalTradingService:
         tp: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
-        NETTING-safe "flip":
+        NETTING-safe flip:
         - If there is an opposite open position for the epic, close it first
+        - Wait briefly for settlement
         - Then open the new position
         """
         desired_action = self._normalize_action(desired_action)
@@ -545,13 +548,23 @@ class CapitalTradingService:
                     close_errors.append(self._clean_message(str(exc)))
 
             if close_errors and opposites:
-                # If you want strict correctness, you can abort open when close fails:
                 return {
                     "ok": False,
                     "error": "close_failed",
                     "message": "Failed closing opposite position(s): " + "; ".join(close_errors),
                     "closed_attempts": opposites,
                 }
+
+            # 1b) wait a moment until opposite is actually gone (avoid race/netting)
+            if opposites:
+                for _ in range(10):
+                    time.sleep(0.3)
+                    still = [
+                        p for p in self._positions_for_epic(resolved_epic)
+                        if p.get("direction") and p["direction"] != desired_action
+                    ]
+                    if not still:
+                        break
 
             # 2) open new position (by epic)
             opened = self.place_market_order_epic(
@@ -643,7 +656,6 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
             return None, msg, raw
 
     def _parse_sl_tp(self, body: dict) -> Tuple[Optional[float], Optional[float]]:
-        # Accept SL/TP in multiple key names
         sl = body.get("sl", None)
         tp = body.get("tp", None)
         if sl is None:
@@ -702,7 +714,13 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
             if not open_action and event in {"short", "sell"}:
                 open_action = "SELL"
 
-            # NETTING-SAFE flip: close opposite then open
+            if not instrument_key and not epic:
+                return {
+                    "ok": False,
+                    "error": "invalid_payload",
+                    "message": "Provide instrument (e.g., metal_gold_spot) or epic in webhook payload.",
+                }, HTTPStatus.BAD_REQUEST
+
             result = SERVICE.close_opposites_then_open(
                 desired_action=open_action,
                 quantity=quantity,
@@ -743,7 +761,6 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/":
-            # optional UI
             if (UI_DIR / "index.html").exists():
                 self._send_file("index.html", "text/html; charset=utf-8")
             else:
@@ -784,10 +801,12 @@ def main():
     print(f"Capital.com base URL: {CAPITAL_BASE_URL}")
     print("Using Capital.com API v1 session auth.")
     print("TradingView webhook endpoint: /webhook/tradingview")
+
     if not TRADINGVIEW_WEBHOOK_SECRET:
         print("WARNING: TRADINGVIEW_WEBHOOK_SECRET is empty. Set it for safety.")
     if not CAPITAL_API_KEY or not CAPITAL_PASSWORD or not CAPITAL_IDENTIFIER:
         print("WARNING: Missing Capital credentials in env vars. Set CAPITAL_API_KEY / CAPITAL_PASSWORD / CAPITAL_IDENTIFIER.")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
