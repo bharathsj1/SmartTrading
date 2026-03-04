@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmartTrading Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="bg-glow"></div>
+  <main class="container">
+    <header class="topbar">
+      <h1>SmartTrading</h1>
+      <p class="sub">Market-order execution and live trade status</p>
+    </header>
+
+    <section class="card market-card">
+      <div class="market-header">
+        <h2 id="symbol">EUR/USD</h2>
+        <span id="marketBadge" class="badge neutral">Checking...</span>
+      </div>
+      <p id="marketMessage" class="muted">Loading market status...</p>
+      <div class="price-row">
+        <span>Market Price</span>
+        <strong id="price">--</strong>
+      </div>
+    </section>
+
+    <section class="card order-card">
+      <h2>Place Market Order</h2>
+      <form id="orderForm">
+        <label>
+          Capital Identifier
+          <input id="capitalIdentifier" name="capitalIdentifier" type="text" placeholder="your login id">
+        </label>
+        <label>
+          Asset Class
+          <select id="assetClass" name="assetClass"></select>
+        </label>
+        <label>
+          Instrument
+          <select id="instrument" name="instrument"></select>
+        </label>
+        <label>
+          Action
+          <select id="action" name="action">
+            <option value="BUY">BUY</option>
+            <option value="SELL">SELL</option>
+          </select>
+        </label>
+        <label>
+          Quantity
+          <input id="quantity" name="quantity" type="number" min="1" step="1" value="10000">
+        </label>
+        <button type="submit">Submit Market Order</button>
+      </form>
+      <p id="orderFeedback" class="muted"></p>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h3>Pending Trades</h3>
+        <div id="pendingTrades" class="table-wrap"></div>
+      </article>
+      <article class="card">
+        <h3>Ongoing Trades</h3>
+        <div id="ongoingTrades" class="table-wrap"></div>
+      </article>
+      <article class="card">
+        <h3>Completed Trades</h3>
+        <div id="completedTrades" class="table-wrap"></div>
+      </article>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
