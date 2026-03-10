@@ -1,23 +1,3 @@
-"""
-Capital.com TradingView Webhook Bridge (NETTING-SAFE)
-
-Fixes the issue where a BUY after a SELL just closes the short (netting),
-by doing: CLOSE opposite positions FIRST → then OPEN new position.
-
-Accepts TradingView JSON payload:
-- secret, identifier
-- event: "entry"/"open"/"close"/"exit" (or omitted)
-- action/side: BUY/SELL/LONG/SHORT
-- instrument (your key like "metal_gold_spot") OR epic (Capital market epic)
-- quantity/qty
-- sl/tp (levels) OR stopLevel/limitLevel (levels)
-
-Notes:
-- Uses RLock (re-entrant) to avoid deadlock with nested calls.
-- Adds a short "settle wait" after closes to avoid race conditions.
-- Rotating credentials: DO NOT hardcode API key/password in code. Use env vars.
-"""
-
 import json
 import os
 import re
@@ -33,11 +13,12 @@ from urllib.parse import urlparse
 import requests
 
 # ---------------------------
-# Config (use env vars!)
+# Config (USE ENV VARS!)
 # ---------------------------
 CAPITAL_BASE_URL = os.getenv(
     "CAPITAL_BASE_URL", "https://demo-api-capital.backend-capital.com"
 ).rstrip("/")
+
 CAPITAL_API_KEY = os.getenv("CAPITAL_API_KEY", "Jm8K70gi5PNGHWpb")
 CAPITAL_PASSWORD = os.getenv("CAPITAL_PASSWORD", "Livepresent@26")
 CAPITAL_IDENTIFIER = os.getenv("CAPITAL_IDENTIFIER", "bharath.sj1@gmail.com")
@@ -123,14 +104,16 @@ if DEFAULT_INSTRUMENT not in INSTRUMENTS:
 # ---------------------------
 class CapitalTradingService:
     def __init__(self) -> None:
-        # RLock avoids deadlock when methods call other locked methods.
         self._lock = RLock()
         self._http = requests.Session()
+
         self._api_key = CAPITAL_API_KEY
         self._password = CAPITAL_PASSWORD
         self._identifier = CAPITAL_IDENTIFIER
+
         self._cst = ""
         self._security_token = ""
+
         self._market_cache: Dict[str, Dict[str, Any]] = {}
         self._market_failures: Dict[str, Dict[str, Any]] = {}
 
@@ -158,11 +141,11 @@ class CapitalTradingService:
 
     def _must_have_credentials(self) -> None:
         if not self._api_key:
-            raise RuntimeError("CAPITAL_API_KEY is missing.")
+            raise RuntimeError("CAPITAL_API_KEY is missing (env var).")
         if not self._password:
-            raise RuntimeError("CAPITAL_PASSWORD is missing.")
+            raise RuntimeError("CAPITAL_PASSWORD is missing (env var).")
         if not self._identifier:
-            raise RuntimeError("CAPITAL_IDENTIFIER is missing.")
+            raise RuntimeError("CAPITAL_IDENTIFIER is missing (env var).")
 
     def _apply_runtime_credentials(self, identifier: str = "") -> None:
         if identifier is not None and str(identifier).strip():
@@ -251,84 +234,6 @@ class CapitalTradingService:
         except ValueError:
             return {}
 
-    def _cache_market_failure(self, key: str, message: str) -> None:
-        self._market_failures[key] = {
-            "message": message,
-            "retry_after": datetime.now(timezone.utc).timestamp() + 120,
-        }
-
-    def _cached_market_failure(self, key: str) -> Optional[str]:
-        row = self._market_failures.get(key)
-        if not row:
-            return None
-        if datetime.now(timezone.utc).timestamp() < row["retry_after"]:
-            return row["message"]
-        self._market_failures.pop(key, None)
-        return None
-
-    def _pick_market(self, markets: List[dict], preferred_epic: str) -> Optional[dict]:
-        if not markets:
-            return None
-        if preferred_epic:
-            for item in markets:
-                if item.get("epic") == preferred_epic:
-                    return item
-        for item in markets:
-            status = str(item.get("snapshot", {}).get("marketStatus", "")).upper()
-            if status == "TRADEABLE":
-                return item
-        return markets[0]
-
-    def _resolve_market(self, instrument_key: str) -> Dict[str, Any]:
-        cached = self._market_cache.get(instrument_key)
-        if cached and datetime.now(timezone.utc).timestamp() < cached["expires_at"]:
-            return cached["value"]
-
-        cached_failure = self._cached_market_failure(instrument_key)
-        if cached_failure:
-            raise RuntimeError(cached_failure)
-
-        spec = self._instrument_spec(instrument_key)
-        search_data = self._request(
-            "GET",
-            "/api/v1/markets",
-            params={"searchTerm": spec["search_term"]},
-        )
-        markets = search_data.get("markets", []) or []
-        pick = self._pick_market(markets, spec.get("preferred_epic", ""))
-        if not pick:
-            msg = f"No Capital.com market found for {spec['label']}."
-            self._cache_market_failure(instrument_key, msg)
-            raise RuntimeError(msg)
-
-        epic = str(pick.get("epic", "")).strip()
-        if not epic:
-            msg = f"No valid epic found for {spec['label']}."
-            self._cache_market_failure(instrument_key, msg)
-            raise RuntimeError(msg)
-
-        details = self._request("GET", f"/api/v1/markets/{epic}")
-        market = {
-            "epic": epic,
-            "instrument": details.get("instrument", {}) or {},
-            "snapshot": details.get("snapshot", {}) or {},
-        }
-
-        self._market_cache[instrument_key] = {
-            "value": market,
-            "expires_at": datetime.now(timezone.utc).timestamp() + 180,
-        }
-        self._market_failures.pop(instrument_key, None)
-        return market
-
-    def _market_status(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
-        status = str(snapshot.get("marketStatus", "")).upper()
-        if not status:
-            return {"is_open": None, "message": "Market status unavailable."}
-        if status == "TRADEABLE":
-            return {"is_open": True, "message": "Market is open and tradeable."}
-        return {"is_open": False, "message": f"Market is {status}."}
-
     def _normalize_action(self, action: str) -> str:
         value = str(action or "").strip().upper()
         if value in {"BUY", "LONG"}:
@@ -348,16 +253,70 @@ class CapitalTradingService:
             time.sleep(0.4)
         return {}
 
-    # ---- position helpers (for NETTING-safe flip) ----
+    # ---- market resolve ----
+    def _pick_market(self, markets: List[dict], preferred_epic: str) -> Optional[dict]:
+        if not markets:
+            return None
+        if preferred_epic:
+            for item in markets:
+                if item.get("epic") == preferred_epic:
+                    return item
+        for item in markets:
+            status = str(item.get("snapshot", {}).get("marketStatus", "")).upper()
+            if status == "TRADEABLE":
+                return item
+        return markets[0]
+
+    def _resolve_market(self, instrument_key: str) -> Dict[str, Any]:
+        cached = self._market_cache.get(instrument_key)
+        if cached and datetime.now(timezone.utc).timestamp() < cached["expires_at"]:
+            return cached["value"]
+
+        spec = self._instrument_spec(instrument_key)
+        search_data = self._request(
+            "GET",
+            "/api/v1/markets",
+            params={"searchTerm": spec["search_term"]},
+        )
+        markets = search_data.get("markets", []) or []
+        pick = self._pick_market(markets, spec.get("preferred_epic", ""))
+        if not pick or not str(pick.get("epic", "")).strip():
+            raise RuntimeError(f"No Capital.com market found for {spec['label']}.")
+
+        epic = str(pick["epic"]).strip()
+        details = self._request("GET", f"/api/v1/markets/{epic}")
+        market = {
+            "epic": epic,
+            "instrument": details.get("instrument", {}) or {},
+            "snapshot": details.get("snapshot", {}) or {},
+        }
+
+        self._market_cache[instrument_key] = {
+            "value": market,
+            "expires_at": datetime.now(timezone.utc).timestamp() + 180,
+        }
+        return market
+
+    def _resolve_epic(self, instrument_key: str = "", epic: str = "") -> str:
+        epic = str(epic or "").strip()
+        if epic:
+            return epic
+        instrument_key = str(instrument_key or "").strip()
+        if not instrument_key:
+            raise ValueError("Provide instrument key or epic.")
+        market = self._resolve_market(instrument_key)
+        return str(market.get("epic", "")).strip()
+
+    # ---- positions ----
     def _positions(self) -> List[Dict[str, Any]]:
         data = self._request("GET", "/api/v1/positions")
         return data.get("positions", []) or []
 
     def _positions_for_epic(self, epic: str) -> List[Dict[str, Any]]:
         epic = str(epic or "").strip()
-        if not epic:
-            return []
         out: List[Dict[str, Any]] = []
+        if not epic:
+            return out
         for row in self._positions():
             market = row.get("market", {}) or {}
             position = row.get("position", {}) or {}
@@ -375,16 +334,21 @@ class CapitalTradingService:
             )
         return out
 
-    def _resolve_epic(self, instrument_key: str = "", epic: str = "") -> str:
-        epic = str(epic or "").strip()
-        if epic:
-            return epic
-        instrument_key = str(instrument_key or "").strip()
-        if not instrument_key:
-            raise ValueError("Provide instrument key or epic.")
-        market = self._resolve_market(instrument_key)
-        return str(market.get("epic", "")).strip()
+    def _extract_open_dealid_from_confirm(self, confirm: Dict[str, Any]) -> str:
+        # Prefer affectedDeals OPEN/OPENED id; confirm.dealId can be the parent deal.
+        for row in (confirm.get("affectedDeals") or []):
+            if str(row.get("status", "")).upper() in {"OPEN", "OPENED"}:
+                d = str(row.get("dealId") or "").strip()
+                if d:
+                    return d
 
+        # Fallback: confirm.dealId
+        did = str(confirm.get("dealId") or "").strip()
+        if did:
+            return did
+        return ""
+
+    # ---- trading ----
     def place_market_order_epic(
         self,
         action: str,
@@ -393,9 +357,12 @@ class CapitalTradingService:
         identifier: str = "",
         sl: Optional[float] = None,
         tp: Optional[float] = None,
+        guaranteed_stop: bool = False,
+        attach_if_missing: bool = True,
     ) -> Dict[str, Any]:
         action = self._normalize_action(action)
         epic = str(epic or "").strip()
+
         if action not in {"BUY", "SELL"}:
             return {"ok": False, "error": "invalid_action", "message": "Action must be BUY or SELL."}
         if not epic:
@@ -403,50 +370,64 @@ class CapitalTradingService:
         if quantity <= 0:
             return {"ok": False, "error": "invalid_quantity", "message": "Quantity must be greater than zero."}
 
-        # NOTE: This method is called inside close_opposites_then_open while lock is held.
-        # Because we use RLock, re-entrant lock is safe.
         with self._lock:
             self._apply_runtime_credentials(identifier=identifier)
-
-            # Check market status
-            details = self._request("GET", f"/api/v1/markets/{epic}")
-            snapshot = details.get("snapshot", {}) or {}
-            mstat = self._market_status(snapshot)
-            if mstat.get("is_open") is False:
-                return {"ok": False, "error": "market_closed", "message": mstat["message"], "market": mstat}
 
             payload: Dict[str, Any] = {
                 "epic": epic,
                 "direction": action,
                 "size": float(quantity),
                 "orderType": "MARKET",
+                "guaranteedStop": bool(guaranteed_stop),
             }
 
             sl_v = self._safe_float(sl)
             tp_v = self._safe_float(tp)
+
+            # ✅ Correct keys for Capital.com:
+            # stopLevel + profitLevel (NOT limitLevel)
             if sl is not None and sl_v > 0:
                 payload["stopLevel"] = sl_v
             if tp is not None and tp_v > 0:
-                payload["limitLevel"] = tp_v
+                payload["profitLevel"] = tp_v
 
             try:
                 create = self._request("POST", "/api/v1/positions", payload=payload)
             except Exception as exc:
-                msg = self._clean_message(str(exc))
-                return {"ok": False, "error": "order_rejected", "message": msg}
+                return {"ok": False, "error": "order_rejected", "message": self._clean_message(str(exc))}
 
             deal_reference = str(create.get("dealReference", "")).strip()
             confirm = self._confirm_by_reference(deal_reference) if deal_reference else {}
 
-            if confirm:
-                deal_status = str(confirm.get("dealStatus", "")).upper()
-                reason = self._clean_message(
-                    str(confirm.get("reason") or confirm.get("statusReason") or confirm.get("errorCode") or "")
-                )
-                if deal_status and deal_status != "ACCEPTED":
-                    return {"ok": False, "error": "order_rejected", "message": reason or f"Order rejected ({deal_status}).", "confirm": confirm}
+            # Optional attach if broker ignored profitLevel on create
+            attach_result: Optional[Dict[str, Any]] = None
+            if attach_if_missing and confirm and tp_v > 0:
+                has_profit = confirm.get("profitLevel") is not None
+                if not has_profit:
+                    deal_id = self._extract_open_dealid_from_confirm(confirm)
+                    if deal_id:
+                        try:
+                            attach_payload = {}
+                            if sl_v > 0:
+                                attach_payload["stopLevel"] = sl_v
+                            if tp_v > 0:
+                                attach_payload["profitLevel"] = tp_v
+                            if attach_payload:
+                                upd = self._request("PUT", f"/api/v1/positions/{deal_id}", payload=attach_payload)
+                                attach_result = {"ok": True, "dealReference": upd.get("dealReference"), "sent": attach_payload}
+                        except Exception as exc:
+                            attach_result = {"ok": False, "message": self._clean_message(str(exc)), "sent": {"stopLevel": sl_v, "profitLevel": tp_v}}
 
-            return {"ok": True, "message": "Market order submitted.", "dealReference": deal_reference, "confirm": confirm, "sent": payload}
+            out = {
+                "ok": True,
+                "message": "Market order submitted.",
+                "dealReference": deal_reference,
+                "confirm": confirm,
+                "sent": payload,
+            }
+            if attach_result is not None:
+                out["attach"] = attach_result
+            return out
 
     def close_positions(
         self,
@@ -458,25 +439,25 @@ class CapitalTradingService:
     ) -> Dict[str, Any]:
         with self._lock:
             self._apply_runtime_credentials(identifier=identifier)
+
             side = self._normalize_action(side) if side else ""
             if side and side not in {"BUY", "SELL"}:
-                return {"ok": False, "error": "invalid_action", "message": "side must be BUY/SELL/LONG/SHORT when provided."}
+                return {"ok": False, "error": "invalid_action", "message": "side must be BUY/SELL when provided."}
 
-            try:
-                resolved_epic = self._resolve_epic(instrument_key=instrument_key, epic=epic) if (epic or instrument_key) else ""
-            except Exception:
-                resolved_epic = str(epic or "").strip()
-
-            closed: List[str] = []
+            resolved_epic = ""
+            if epic or instrument_key:
+                try:
+                    resolved_epic = self._resolve_epic(instrument_key=instrument_key, epic=epic)
+                except Exception:
+                    resolved_epic = str(epic or "").strip()
 
             if deal_id:
                 deal = str(deal_id).strip()
                 try:
                     self._request("DELETE", f"/api/v1/positions/{deal}")
-                    closed.append(deal)
+                    return {"ok": True, "message": "Position close request sent.", "closed_deals": [deal]}
                 except Exception as exc:
                     return {"ok": False, "error": "close_failed", "message": self._clean_message(str(exc))}
-                return {"ok": True, "message": "Position close request sent.", "closed_deals": closed}
 
             targets: List[str] = []
             for row in self._positions():
@@ -487,12 +468,12 @@ class CapitalTradingService:
                 if resolved_epic and str(market.get("epic", "")).strip() != resolved_epic:
                     continue
                 if position.get("dealId"):
-                    targets.append(str(position.get("dealId")))
+                    targets.append(str(position["dealId"]))
 
             if not targets:
                 return {"ok": True, "message": "No matching open positions found.", "closed_deals": []}
 
-            errors: List[str] = []
+            closed, errors = [], []
             for target in targets:
                 try:
                     self._request("DELETE", f"/api/v1/positions/{target}")
@@ -516,12 +497,6 @@ class CapitalTradingService:
         sl: Optional[float] = None,
         tp: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """
-        NETTING-safe flip:
-        - If there is an opposite open position for the epic, close it first
-        - Wait briefly for settlement
-        - Then open the new position
-        """
         desired_action = self._normalize_action(desired_action)
         if desired_action not in {"BUY", "SELL"}:
             return {"ok": False, "error": "invalid_action", "message": "Action must be BUY or SELL."}
@@ -536,14 +511,14 @@ class CapitalTradingService:
             except Exception as exc:
                 return {"ok": False, "error": "invalid_payload", "message": self._clean_message(str(exc))}
 
-            # 1) close opposite positions for this epic
             existing = self._positions_for_epic(resolved_epic)
             opposites = [p["dealId"] for p in existing if p.get("direction") and p["direction"] != desired_action]
 
+            # 1) close opposites
             close_errors: List[str] = []
-            for deal_id in opposites:
+            for did in opposites:
                 try:
-                    self._request("DELETE", f"/api/v1/positions/{deal_id}")
+                    self._request("DELETE", f"/api/v1/positions/{did}")
                 except Exception as exc:
                     close_errors.append(self._clean_message(str(exc)))
 
@@ -555,18 +530,7 @@ class CapitalTradingService:
                     "closed_attempts": opposites,
                 }
 
-            # 1b) wait a moment until opposite is actually gone (avoid race/netting)
-            if opposites:
-                for _ in range(10):
-                    time.sleep(0.3)
-                    still = [
-                        p for p in self._positions_for_epic(resolved_epic)
-                        if p.get("direction") and p["direction"] != desired_action
-                    ]
-                    if not still:
-                        break
-
-            # 2) open new position (by epic)
+            # 2) open new
             opened = self.place_market_order_epic(
                 action=desired_action,
                 quantity=quantity,
@@ -603,21 +567,6 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _send_file(self, filename: str, content_type: str) -> None:
-        path = UI_DIR / filename
-        if not path.exists():
-            self._send_json(
-                {"ok": False, "message": f"Missing UI file: {filename}"},
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-            )
-            return
-        body = path.read_bytes()
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
     def _mask_sensitive(self, value):
         if isinstance(value, dict):
             masked = {}
@@ -635,14 +584,12 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
     def _log_webhook_result(self, body, result, status: int) -> None:
         if status < HTTPStatus.BAD_REQUEST:
             return
-        safe_body = self._mask_sensitive(body)
-        safe_result = self._mask_sensitive(result)
         print(
             "[webhook] "
             f"status={int(status)} "
-            f"error={safe_result.get('error', '')} "
-            f"message={safe_result.get('message', '')} "
-            f"payload={json.dumps(safe_body, ensure_ascii=True)}"
+            f"error={result.get('error', '')} "
+            f"message={result.get('message', '')} "
+            f"payload={json.dumps(self._mask_sensitive(body), ensure_ascii=True)}"
         )
 
     def _read_json_body(self) -> Tuple[Optional[dict], Optional[str], str]:
@@ -658,10 +605,12 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
     def _parse_sl_tp(self, body: dict) -> Tuple[Optional[float], Optional[float]]:
         sl = body.get("sl", None)
         tp = body.get("tp", None)
+
+        # allow broker-style names too
         if sl is None:
             sl = body.get("stopLevel", None)
         if tp is None:
-            tp = body.get("limitLevel", None)
+            tp = body.get("profitLevel", None)
 
         try:
             sl = float(sl) if sl is not None else None
@@ -700,7 +649,7 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
         open_events = {"entry", "open", "long", "short", "buy", "sell"}
         close_events = {"close", "exit"}
 
-        # If event omitted, infer.
+        # Infer if missing
         if not event:
             if action in {"BUY", "SELL"} or side in {"BUY", "SELL", "LONG", "SHORT"}:
                 event = "entry"
@@ -714,28 +663,16 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
             if not open_action and event in {"short", "sell"}:
                 open_action = "SELL"
 
-            if not instrument_key and not epic:
-                return {
-                    "ok": False,
-                    "error": "invalid_payload",
-                    "message": "Provide instrument (e.g., metal_gold_spot) or epic in webhook payload.",
-                }, HTTPStatus.BAD_REQUEST
-
             result = SERVICE.close_opposites_then_open(
                 desired_action=open_action,
                 quantity=quantity,
-                instrument_key=instrument_key,
+                instrument_key=instrument_key or DEFAULT_INSTRUMENT,
                 epic=epic,
                 identifier=identifier,
                 sl=sl,
                 tp=tp,
             )
-
-            if result.get("ok"):
-                return result, HTTPStatus.OK
-            if result.get("error") in {"market_closed", "order_rejected"}:
-                return result, HTTPStatus.CONFLICT
-            return result, HTTPStatus.BAD_REQUEST
+            return (result, HTTPStatus.OK) if result.get("ok") else (result, HTTPStatus.BAD_REQUEST)
 
         if event in close_events:
             close_side = side or action
@@ -751,28 +688,15 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
                 instrument_key=instrument_key,
                 identifier=identifier,
             )
-            if result.get("ok"):
-                return result, HTTPStatus.OK
-            return result, HTTPStatus.BAD_REQUEST
+            return (result, HTTPStatus.OK) if result.get("ok") else (result, HTTPStatus.BAD_REQUEST)
 
         return {"ok": False, "error": "invalid_payload", "message": f"Unknown event: {event}"}, HTTPStatus.BAD_REQUEST
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        path = parsed.path
-        if path == "/":
-            if (UI_DIR / "index.html").exists():
-                self._send_file("index.html", "text/html; charset=utf-8")
-            else:
-                self._send_json({"ok": True, "message": "Server is running."}, HTTPStatus.OK)
+        if parsed.path == "/":
+            self._send_json({"ok": True, "message": "Server is running."}, HTTPStatus.OK)
             return
-        if path == "/styles.css":
-            self._send_file("styles.css", "text/css; charset=utf-8")
-            return
-        if path == "/app.js":
-            self._send_file("app.js", "application/javascript; charset=utf-8")
-            return
-
         self._send_json({"ok": False, "message": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
@@ -798,21 +722,10 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
 def main():
     server = HTTPServer((WEB_HOST, WEB_PORT), TradingRequestHandler)
     print(f"Server started at http://{WEB_HOST}:{WEB_PORT}")
-    print(f"Capital.com base URL: {CAPITAL_BASE_URL}")
-    print("Using Capital.com API v1 session auth.")
-    print("TradingView webhook endpoint: /webhook/tradingview")
-
+    print(f"TradingView webhook endpoint: /webhook/tradingview")
     if not TRADINGVIEW_WEBHOOK_SECRET:
         print("WARNING: TRADINGVIEW_WEBHOOK_SECRET is empty. Set it for safety.")
-    if not CAPITAL_API_KEY or not CAPITAL_PASSWORD or not CAPITAL_IDENTIFIER:
-        print("WARNING: Missing Capital credentials in env vars. Set CAPITAL_API_KEY / CAPITAL_PASSWORD / CAPITAL_IDENTIFIER.")
-
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    server.serve_forever()
 
 
 if __name__ == "__main__":
