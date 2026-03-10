@@ -682,6 +682,9 @@ dLow      = securityNoRep(syminfo.tickerid, "D", low  [1])
 dClose    = securityNoRep(syminfo.tickerid, "D", close[1])
 ema = ta.ema(close, 144)
 emaBull = close > ema
+trendEma = ta.ema(close, 200)
+allowLongTrend = close > trendEma
+allowShortTrend = close < trendEma
 equal_tf(res) => str.tonumber(res) == f_chartTfInMinutes() and not timeframe.isseconds
 higher_tf(res) => str.tonumber(res) > f_chartTfInMinutes() or timeframe.isseconds
 too_small_tf(res) => (timeframe.isweekly and res=="1") or (timeframe.ismonthly and str.tonumber(res) < 10)
@@ -1006,19 +1009,24 @@ switch
     lxTrigger and condition[1] >=  1.0 => condition :=  0.0
     sxTrigger and condition[1] <= -1.0 => condition :=  0.0
 
-longE        = leTrigger and condition[1] <=  0.0 and condition ==  1.0
-shortE       = seTrigger and condition[1] >=  0.0 and condition == -1.0
+cooldownBars = input.int(5, 'Cooldown Bars', minval = 0, group = G_RISK)
+var int lastTradeBar = na
+canTrade = na(lastTradeBar) or (bar_index - lastTradeBar > cooldownBars)
+
+longE        = leTrigger and condition[1] <=  0.0 and condition ==  1.0 and allowLongTrend and canTrade
+shortE       = seTrigger and condition[1] >=  0.0 and condition == -1.0 and allowShortTrend and canTrade
 longX        = lxTrigger and condition[1] >=  1.0 and condition ==  0.0
 shortX       = sxTrigger and condition[1] <= -1.0 and condition ==  0.0
 longSL       = slLong    and condition[1] >=  1.0 and condition ==  0.0
 shortSL      = slShort   and condition[1] <= -1.0 and condition ==  0.0
+if longE or shortE
+    lastTradeBar := bar_index
 longTP3      = tp3Long   and condition[1] ==  1.2 and condition ==  1.3
 shortTP3     = tp3Short  and condition[1] == -1.2 and condition == -1.3
 longTP2      = tp2Long   and condition[1] ==  1.1 and condition ==  1.2
 shortTP2     = tp2Short  and condition[1] == -1.1 and condition == -1.2
 longTP1      = tp1Long   and condition[1] ==  1.0 and condition ==  1.1
 shortTP1     = tp1Short  and condition[1] == -1.0 and condition == -1.1
-
 
 
 //──────────────────────────────────────────────────────────────────────────────
