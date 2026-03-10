@@ -884,7 +884,7 @@ i_src        = close
 //──────────────────────────────────────────────────────────────────────────────
 G_WEBHOOK          = '■ ' + 'Webhook Integration'
 useWebhookJson     = input.bool(true,  'Use JSON Webhook Messages', group = G_WEBHOOK)
-tvSecret           = input.string('',  'Webhook Secret',            group = G_WEBHOOK)
+tvSecret           = input.string('Smartconnect4u',  'Webhook Secret',            group = G_WEBHOOK)
 instrumentKeyInput = input.string('',  'Instrument Key Override',   group = G_WEBHOOK)
 instrumentKey      = instrumentKeyInput == '' ? syminfo.ticker : instrumentKeyInput
 orderQty           = input.float(1.0,  'Order Quantity',            group = G_WEBHOOK, step = 0.01)
