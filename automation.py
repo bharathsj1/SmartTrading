@@ -32,6 +32,19 @@ DEFAULT_INSTRUMENT = os.getenv("DEFAULT_INSTRUMENT", "forex_eurusd").strip()
 
 TRADINGVIEW_WEBHOOK_SECRET = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "Smartconnect4u").strip()
 
+INSTRUMENT_ALIASES = {
+    "GOLD": "metal_gold_spot",
+    "XAUUSD": "metal_gold_spot",
+    "SILVER": "metal_silver_spot",
+    "XAGUSD": "metal_silver_spot",
+    "EURUSD": "forex_eurusd",
+    "GBPUSD": "forex_gbpusd",
+    "USDJPY": "forex_usdjpy",
+    "AAPL": "stock_aapl",
+    "MSFT": "stock_msft",
+    "TSLA": "stock_tsla",
+}
+
 INSTRUMENTS: Dict[str, Dict[str, str]] = {
     "forex_eurusd": {
         "group": "forex",
@@ -115,6 +128,7 @@ class CapitalTradingService:
         self._security_token = ""
 
         self._market_cache: Dict[str, Dict[str, Any]] = {}
+        self._market_by_epic_cache: Dict[str, Dict[str, Any]] = {}
         self._market_failures: Dict[str, Dict[str, Any]] = {}
 
     def _safe_float(self, value) -> float:
@@ -134,7 +148,9 @@ class CapitalTradingService:
         return txt
 
     def _instrument_spec(self, instrument_key: str) -> Dict[str, str]:
-        spec = INSTRUMENTS.get(instrument_key)
+        key = str(instrument_key or "").strip()
+        key = INSTRUMENT_ALIASES.get(key.upper(), key)
+        spec = INSTRUMENTS.get(key)
         if not spec:
             raise ValueError("Unknown instrument selected.")
         return spec
@@ -289,11 +305,34 @@ class CapitalTradingService:
             "epic": epic,
             "instrument": details.get("instrument", {}) or {},
             "snapshot": details.get("snapshot", {}) or {},
+            "dealingRules": details.get("dealingRules", {}) or {},
         }
 
         self._market_cache[instrument_key] = {
             "value": market,
             "expires_at": datetime.now(timezone.utc).timestamp() + 180,
+        }
+        return market
+
+    def _market_for_epic(self, epic: str) -> Dict[str, Any]:
+        epic = str(epic or "").strip()
+        if not epic:
+            raise ValueError("epic is required.")
+
+        cached = self._market_by_epic_cache.get(epic)
+        if cached and datetime.now(timezone.utc).timestamp() < cached["expires_at"]:
+            return cached["value"]
+
+        details = self._request("GET", f"/api/v1/markets/{epic}")
+        market = {
+            "epic": epic,
+            "instrument": details.get("instrument", {}) or {},
+            "snapshot": details.get("snapshot", {}) or {},
+            "dealingRules": details.get("dealingRules", {}) or {},
+        }
+        self._market_by_epic_cache[epic] = {
+            "value": market,
+            "expires_at": datetime.now(timezone.utc).timestamp() + 30,
         }
         return market
 
@@ -348,6 +387,88 @@ class CapitalTradingService:
             return did
         return ""
 
+    def _format_price(self, value: float) -> str:
+        if value <= 0:
+            return "0"
+        return f"{value:.5f}".rstrip("0").rstrip(".")
+
+    def _distance_to_price(self, rule: Any, market: Dict[str, Any], reference_price: float) -> float:
+        if isinstance(rule, dict):
+            raw_value = rule.get("value")
+            unit = str(rule.get("unit", "")).strip().upper()
+        else:
+            raw_value = rule
+            unit = ""
+
+        value = self._safe_float(raw_value)
+        if value <= 0:
+            return 0.0
+
+        if unit in {"", "PRICE", "AMOUNT"}:
+            return value
+        if unit == "PERCENTAGE" and reference_price > 0:
+            return reference_price * (value / 100.0)
+        if unit == "POINTS":
+            scaling = self._safe_float((market.get("instrument", {}) or {}).get("scalingFactor"))
+            if scaling > 0:
+                return value / scaling
+            return value
+        return 0.0
+
+    def _validate_protective_levels(
+        self,
+        action: str,
+        market: Dict[str, Any],
+        sl: Optional[float],
+        tp: Optional[float],
+    ) -> Optional[Dict[str, Any]]:
+        rules = market.get("dealingRules", {}) or {}
+        snapshot = market.get("snapshot", {}) or {}
+        min_rule = rules.get("minNormalStopOrLimitDistance") or {}
+
+        bid = self._safe_float(snapshot.get("bid"))
+        offer = self._safe_float(snapshot.get("offer"))
+        action = self._normalize_action(action)
+
+        def build_error(error: str, level_name: str, submitted: float, comparator: str, required: float) -> Dict[str, Any]:
+            return {
+                "ok": False,
+                "error": error,
+                "message": (
+                    f"{level_name} {self._format_price(submitted)} is invalid for {action} on {market.get('epic', '')}. "
+                    f"It must be {comparator} {self._format_price(required)} based on current market rules."
+                ),
+                "details": {
+                    "epic": market.get("epic", ""),
+                    "submitted": submitted,
+                    "required": required,
+                    "bid": bid,
+                    "offer": offer,
+                },
+            }
+
+        if tp is not None and tp > 0:
+            reference = offer if action == "BUY" else bid
+            distance = self._distance_to_price(min_rule, market, reference)
+            if reference > 0 and distance > 0:
+                required = reference + distance if action == "BUY" else reference - distance
+                if action == "BUY" and tp < required:
+                    return build_error("invalid_takeprofit", "Take-profit", tp, ">=", required)
+                if action == "SELL" and tp > required:
+                    return build_error("invalid_takeprofit", "Take-profit", tp, "<=", required)
+
+        if sl is not None and sl > 0:
+            reference = bid if action == "BUY" else offer
+            distance = self._distance_to_price(min_rule, market, reference)
+            if reference > 0 and distance > 0:
+                required = reference - distance if action == "BUY" else reference + distance
+                if action == "BUY" and sl > required:
+                    return build_error("invalid_stoploss", "Stop-loss", sl, "<=", required)
+                if action == "SELL" and sl < required:
+                    return build_error("invalid_stoploss", "Stop-loss", sl, ">=", required)
+
+        return None
+
     # ---- trading ----
     def place_market_order_epic(
         self,
@@ -372,6 +493,21 @@ class CapitalTradingService:
 
         with self._lock:
             self._apply_runtime_credentials(identifier=identifier)
+
+            market: Dict[str, Any] = {}
+            if sl is not None or tp is not None:
+                try:
+                    market = self._market_for_epic(epic)
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "error": "market_lookup_failed",
+                        "message": self._clean_message(str(exc)),
+                    }
+
+                validation_error = self._validate_protective_levels(action, market, sl, tp)
+                if validation_error:
+                    return validation_error
 
             payload: Dict[str, Any] = {
                 "epic": epic,
@@ -604,7 +740,11 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
 
     def _parse_sl_tp(self, body: dict) -> Tuple[Optional[float], Optional[float]]:
         sl = body.get("sl", None)
-        tp = body.get("tp", None)
+
+        # Prefer tp1 from Pine payload, then fallback
+        tp = body.get("tp1", None)
+        if tp is None:
+            tp = body.get("tp", None)
 
         # allow broker-style names too
         if sl is None:
@@ -616,10 +756,12 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
             sl = float(sl) if sl is not None else None
         except (TypeError, ValueError):
             sl = None
+
         try:
             tp = float(tp) if tp is not None else None
         except (TypeError, ValueError):
             tp = None
+
         return sl, tp
 
     def _execute_tradingview_webhook(self, body: dict) -> Tuple[dict, int]:
