@@ -1,0 +1,18 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "CAPITAL_BASE_URL": "https://demo-api-capital.backend-capital.com",
+    "CAPITAL_API_KEY": "Jm8K70gi5PNGHWpb",
+    "CAPITAL_PASSWORD": "Livepresent@26",
+    "CAPITAL_IDENTIFIER": "bharath.sj1@gmail.com",
+    "CAPITAL_API_VERSION": "1",
+    "TRADINGVIEW_WEBHOOK_SECRET": "Smartconnect4u",
+    "WEBHOOK_QUEUE_NAME": "tradingview-webhooks",
+    "WORKER_POISON_QUEUE_NAME": "tradingview-webhooks-poison",
+    "TRADING_STATE_TABLE_NAME": "TradingWebhookState",
+    "DEFAULT_INSTRUMENT": "forex_eurusd",
+    "CAPITAL_REQUEST_TIMEOUT_SECONDS": "25"
+  }
+}
