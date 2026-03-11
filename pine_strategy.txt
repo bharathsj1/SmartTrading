@@ -1013,8 +1013,18 @@ cooldownBars = input.int(5, 'Cooldown Bars', minval = 0, group = G_RISK)
 var int lastTradeBar = na
 canTrade = na(lastTradeBar) or (bar_index - lastTradeBar > cooldownBars)
 
-longE        = leTrigger and condition[1] <=  0.0 and condition ==  1.0 and allowLongTrend and canTrade
-shortE       = seTrigger and condition[1] >=  0.0 and condition == -1.0 and allowShortTrend and canTrade
+slopeLookback   = input.int(3, 'Slope Lookback', minval = 1, group = G_RISK)
+minSlope        = input.float(0.5, 'Min Slope', step = 0.1, group = G_RISK)
+maSlope         = closeSeriesAlt - closeSeriesAlt[slopeLookback]
+allowLongSlope  = maSlope > minSlope
+allowShortSlope = maSlope < -minSlope
+
+atrFast = ta.atr(14)
+atrSlow = ta.sma(atrFast, 50)
+volatilityOK = atrFast > atrSlow
+
+longE        = leTrigger and condition[1] <=  0.0 and condition ==  1.0 and allowLongTrend and canTrade and allowLongSlope
+shortE       = seTrigger and condition[1] >=  0.0 and condition == -1.0 and allowShortTrend and canTrade and allowShortSlope
 longX        = lxTrigger and condition[1] >=  1.0 and condition ==  0.0
 shortX       = sxTrigger and condition[1] <= -1.0 and condition ==  0.0
 longSL       = slLong    and condition[1] >=  1.0 and condition ==  0.0
