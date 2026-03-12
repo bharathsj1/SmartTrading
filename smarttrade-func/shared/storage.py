@@ -10,7 +10,7 @@ from azure.data.tables import TableServiceClient, UpdateMode
 from azure.storage.queue import QueueServiceClient
 
 from shared.config import Settings
-from shared.helpers import truncate_text, utc_now_iso
+from shared.helpers import log_event, truncate_text, utc_now_iso
 from shared.models import QueueEnvelope
 
 STATE_PARTITION_KEY = "tradingview"
@@ -46,8 +46,9 @@ def ensure_runtime_infrastructure(settings: Settings, logger: Optional[logging.L
 class QueuePublisher:
     """Azure Functions change: explicit Queue SDK use gives clearer enqueue error handling and testability."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, logger: Optional[logging.Logger] = None) -> None:
         self._settings = settings
+        self._logger = logger
         self._queue_service: Optional[QueueServiceClient] = None
         self._queue_client = None
         self._initialized = False
@@ -75,13 +76,23 @@ class QueuePublisher:
         self._ensure_queue()
         encoded = base64.b64encode(envelope.to_json().encode("utf-8")).decode("utf-8")
         self._queue_client.send_message(encoded)
+        if self._logger:
+            log_event(
+                self._logger,
+                logging.INFO,
+                "queue.message_enqueued",
+                request_id=envelope.request_id,
+                dedupe_key=envelope.dedupe_key,
+                queue_name=self._settings.webhook_queue_name,
+            )
 
 
 class TradingStateStore:
     """Stores webhook idempotency and execution status in Azure Table Storage."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, logger: Optional[logging.Logger] = None) -> None:
         self._settings = settings
+        self._logger = logger
         self._service: Optional[TableServiceClient] = None
         self._table = None
 
@@ -101,6 +112,18 @@ class TradingStateStore:
 
     def _base_entity(self, dedupe_key: str) -> dict[str, Any]:
         return {"PartitionKey": STATE_PARTITION_KEY, "RowKey": dedupe_key}
+
+    def _log_state(self, event_name: str, dedupe_key: str, **fields: Any) -> None:
+        if not self._logger:
+            return
+        log_event(
+            self._logger,
+            logging.INFO,
+            event_name,
+            dedupe_key=dedupe_key,
+            table_name=self._settings.trading_state_table_name,
+            **fields,
+        )
 
     def get(self, dedupe_key: str) -> Optional[dict[str, Any]]:
         try:
@@ -125,6 +148,14 @@ class TradingStateStore:
         }
         try:
             self._table_client().create_entity(entity)
+            self._log_state(
+                "state.reserved",
+                envelope.dedupe_key,
+                request_id=envelope.request_id,
+                status="accepted",
+                instrument=envelope.payload.instrument,
+                side=envelope.payload.action or envelope.payload.side,
+            )
             return True
         except ResourceExistsError:
             existing = self.get(envelope.dedupe_key)
@@ -138,7 +169,20 @@ class TradingStateStore:
                 existing["UpdatedAt"] = utc_now_iso()
                 existing["LastError"] = ""
                 self._table_client().upsert_entity(existing, mode=UpdateMode.MERGE)
+                self._log_state(
+                    "state.retry_reserved",
+                    envelope.dedupe_key,
+                    request_id=envelope.request_id,
+                    previous_status=status,
+                    status="accepted",
+                )
                 return True
+            self._log_state(
+                "state.reserve_conflict",
+                envelope.dedupe_key,
+                request_id=envelope.request_id,
+                existing_status=status,
+            )
             return False
 
     def mark_enqueued(self, dedupe_key: str) -> None:
@@ -150,6 +194,7 @@ class TradingStateStore:
             },
             mode=UpdateMode.MERGE,
         )
+        self._log_state("state.enqueued", dedupe_key, status="enqueued")
 
     def mark_enqueue_failed(self, dedupe_key: str, error: str) -> None:
         self._table_client().upsert_entity(
@@ -161,6 +206,7 @@ class TradingStateStore:
             },
             mode=UpdateMode.MERGE,
         )
+        self._log_state("state.enqueue_failed", dedupe_key, status="enqueue_failed", error=truncate_text(error, 500))
 
     def mark_processing(self, dedupe_key: str, dequeue_count: int) -> None:
         entity = self.get(dedupe_key) or self._base_entity(dedupe_key)
@@ -175,6 +221,13 @@ class TradingStateStore:
             },
             mode=UpdateMode.MERGE,
         )
+        self._log_state(
+            "state.processing",
+            dedupe_key,
+            status="processing",
+            attempts=attempts,
+            dequeue_count=int(dequeue_count),
+        )
 
     def mark_completed(self, dedupe_key: str, result: dict[str, Any]) -> None:
         self._table_client().upsert_entity(
@@ -187,6 +240,7 @@ class TradingStateStore:
             },
             mode=UpdateMode.MERGE,
         )
+        self._log_state("state.completed", dedupe_key, status="completed")
 
     def mark_failed(self, dedupe_key: str, error: str) -> None:
         self._table_client().upsert_entity(
@@ -198,15 +252,32 @@ class TradingStateStore:
             },
             mode=UpdateMode.MERGE,
         )
+        self._log_state("state.failed", dedupe_key, status="failed", error=truncate_text(error, 500))
 
-    def mark_poisoned(self, dedupe_key: str, error: str, dequeue_count: int) -> None:
+    def mark_poisoned(
+        self,
+        dedupe_key: str,
+        error: str,
+        dequeue_count: int,
+        previous_error: str = "",
+    ) -> None:
+        effective_error = truncate_text(previous_error or error)
         self._table_client().upsert_entity(
             {
                 **self._base_entity(dedupe_key),
                 "Status": "poisoned",
-                "LastError": truncate_text(error),
+                "LastError": effective_error,
+                "PoisonReason": truncate_text(error),
                 "LastDequeueCount": int(dequeue_count),
                 "UpdatedAt": utc_now_iso(),
             },
             mode=UpdateMode.MERGE,
+        )
+        self._log_state(
+            "state.poisoned",
+            dedupe_key,
+            status="poisoned",
+            dequeue_count=int(dequeue_count),
+            error=truncate_text(error, 500),
+            previous_error=truncate_text(previous_error, 500),
         )

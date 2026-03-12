@@ -199,6 +199,14 @@ class CapitalTradingService:
 
     def _login(self) -> None:
         self._must_have_credentials()
+        log_event(
+            self._logger,
+            logging.INFO,
+            "capital.login.start",
+            base_url=self._settings.capital_base_url,
+            has_identifier=bool(self._identifier),
+            has_api_key=bool(self._api_key),
+        )
         response = self._http.post(
             f"{self._settings.capital_base_url}/api/v1/session",
             headers={
@@ -210,11 +218,26 @@ class CapitalTradingService:
             timeout=self._settings.capital_request_timeout_seconds,
         )
         if response.status_code >= 400:
-            raise RuntimeError(f"Capital.com login failed: {self._error_text_from_response(response)}")
+            error_text = self._error_text_from_response(response)
+            log_event(
+                self._logger,
+                logging.ERROR,
+                "capital.login.failed",
+                base_url=self._settings.capital_base_url,
+                status_code=response.status_code,
+                error=error_text,
+            )
+            raise RuntimeError(f"Capital.com login failed: {error_text}")
         self._cst = response.headers.get("CST", "")
         self._security_token = response.headers.get("X-SECURITY-TOKEN", "")
         if not self._cst or not self._security_token:
             raise RuntimeError("Capital.com login failed: Missing auth tokens.")
+        log_event(
+            self._logger,
+            logging.INFO,
+            "capital.login.succeeded",
+            base_url=self._settings.capital_base_url,
+        )
 
     def _request(
         self,
@@ -472,10 +495,28 @@ class CapitalTradingService:
 
         with self._lock:
             self._apply_runtime_credentials(identifier)
+            log_event(
+                self._logger,
+                logging.INFO,
+                "capital.order.submit_start",
+                epic=epic,
+                action=action,
+                quantity=float(quantity),
+                sl=self._safe_float(sl) if sl is not None else None,
+                tp=self._safe_float(tp) if tp is not None else None,
+            )
             if sl is not None or tp is not None:
                 market = self._market_for_epic(epic)
                 validation_error = self._validate_protective_levels(action, market, sl, tp)
                 if validation_error:
+                    log_event(
+                        self._logger,
+                        logging.ERROR,
+                        "capital.order.validation_failed",
+                        epic=epic,
+                        action=action,
+                        result=mask_sensitive(validation_error),
+                    )
                     return validation_error
 
             payload: dict[str, Any] = {
@@ -495,6 +536,15 @@ class CapitalTradingService:
             try:
                 create = self._request("POST", "/api/v1/positions", payload=payload)
             except Exception as exc:
+                log_event(
+                    self._logger,
+                    logging.ERROR,
+                    "capital.order.submit_failed",
+                    epic=epic,
+                    action=action,
+                    quantity=float(quantity),
+                    error=self._clean_message(str(exc)),
+                )
                 return {"ok": False, "error": "order_rejected", "message": self._clean_message(str(exc))}
 
             deal_reference = str(create.get("dealReference", "")).strip()
@@ -537,6 +587,16 @@ class CapitalTradingService:
                 "confirm": confirm,
                 "sent": payload,
             }
+            log_event(
+                self._logger,
+                logging.INFO,
+                "capital.order.submit_succeeded",
+                epic=epic,
+                action=action,
+                quantity=float(quantity),
+                deal_reference=deal_reference,
+                confirmed=bool(confirm),
+            )
             if attach_result is not None:
                 result["attach"] = attach_result
             return result
@@ -630,10 +690,26 @@ class CapitalTradingService:
             opposites = [
                 row["dealId"] for row in existing if row.get("direction") and row["direction"] != desired_action
             ]
+            log_event(
+                self._logger,
+                logging.INFO,
+                "capital.reverse.positions_scanned",
+                desired_action=desired_action,
+                epic=resolved_epic,
+                open_positions=len(existing),
+                opposite_positions=len(opposites),
+            )
 
             close_errors: List[str] = []
             for deal_id in opposites:
                 try:
+                    log_event(
+                        self._logger,
+                        logging.INFO,
+                        "capital.reverse.close_attempt",
+                        deal_id=deal_id,
+                        epic=resolved_epic,
+                    )
                     self._request("DELETE", f"/api/v1/positions/{deal_id}")
                 except Exception as exc:
                     close_errors.append(self._clean_message(str(exc)))
@@ -693,6 +769,11 @@ class CapitalTradingService:
             "capital.execution.start",
             request_id=request_id,
             dedupe_key=dedupe_key,
+            route_event=event,
+            action=action,
+            side=side,
+            instrument=instrument_key,
+            quantity=quantity,
             payload=mask_sensitive(webhook.raw),
         )
 

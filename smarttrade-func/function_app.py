@@ -22,8 +22,8 @@ from shared.storage import QueuePublisher, TradingStateStore, ensure_runtime_inf
 
 SETTINGS = get_settings()
 LOGGER = logging.getLogger("trading.azure_functions")
-STATE_STORE = TradingStateStore(SETTINGS)
-QUEUE_PUBLISHER = QueuePublisher(SETTINGS)
+STATE_STORE = TradingStateStore(SETTINGS, logger=LOGGER)
+QUEUE_PUBLISHER = QueuePublisher(SETTINGS, logger=LOGGER)
 CAPITAL_SERVICE = CapitalTradingService(SETTINGS, logger=LOGGER)
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
@@ -67,12 +67,29 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     webhook = NormalizedWebhook.from_dict(body)
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "webhook.received",
+        request_id=request_id,
+        instrument=webhook.instrument,
+        webhook_event=webhook.event,
+        action=webhook.action,
+        side=webhook.side,
+        quantity=webhook.quantity,
+        strategy=webhook.strategy,
+        bar_time=webhook.bar_time,
+        comment=webhook.comment,
+        payload=mask_sensitive(webhook.raw),
+    )
     if SETTINGS.tradingview_webhook_secret and webhook.secret != SETTINGS.tradingview_webhook_secret:
         log_event(
             LOGGER,
             logging.WARNING,
             "webhook.unauthorized",
             request_id=request_id,
+            instrument=webhook.instrument,
+            webhook_event=webhook.event,
         )
         return _json_response(
             {"ok": False, "error": "unauthorized", "message": "Invalid webhook secret."},
@@ -88,14 +105,40 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
     )
 
     try:
+        reserved = STATE_STORE.reserve_webhook(envelope)
+        if not reserved:
+            existing = STATE_STORE.get(dedupe_key) or {}
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "webhook.duplicate_ignored",
+                request_id=request_id,
+                dedupe_key=dedupe_key,
+                existing_status=str(existing.get("Status") or "").lower(),
+                instrument=webhook.instrument,
+                webhook_event=webhook.event,
+            )
+            return _json_response(
+                {
+                    "ok": True,
+                    "message": "Webhook accepted",
+                    "request_id": request_id,
+                    "duplicate": True,
+                },
+                200,
+            )
         QUEUE_PUBLISHER.enqueue(envelope)
+        STATE_STORE.mark_enqueued(dedupe_key)
     except Exception as exc:
+        STATE_STORE.mark_enqueue_failed(dedupe_key, str(exc))
         log_event(
             LOGGER,
             logging.ERROR,
             "webhook.enqueue_failed",
             request_id=request_id,
             dedupe_key=dedupe_key,
+            instrument=webhook.instrument,
+            webhook_event=webhook.event,
             error=str(exc),
         )
         return _json_response(
@@ -110,8 +153,10 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
         request_id=request_id,
         dedupe_key=dedupe_key,
         webhook_event=webhook.event,
+        action=webhook.action,
         side=webhook.side,
         instrument=webhook.instrument,
+        quantity=webhook.quantity,
     )
 
     return _json_response(
@@ -131,32 +176,33 @@ def trading_worker(msg: func.QueueMessage) -> None:
     queue_latency_ms = milliseconds_between(envelope.received_at, processing_started_at)
 
     existing = STATE_STORE.get(envelope.dedupe_key)
-    if existing:
-        status = str(existing.get("Status") or "").lower()
-        if status in {"completed", "processing", "enqueued", "accepted"}:
-            log_event(
-                LOGGER,
-                logging.INFO,
-                "worker.duplicate_skipped",
-                request_id=envelope.request_id,
-                dedupe_key=envelope.dedupe_key,
-                status=status,
-                queue_latency_ms=queue_latency_ms,
-            )
-            return
-
-    if not STATE_STORE.reserve_webhook(envelope):
+    if existing and str(existing.get("Status") or "").lower() == "completed":
         log_event(
             LOGGER,
             logging.INFO,
-            "worker.reserve_failed_duplicate",
+            "worker.duplicate_skipped",
             request_id=envelope.request_id,
             dedupe_key=envelope.dedupe_key,
+            status="completed",
             queue_latency_ms=queue_latency_ms,
         )
         return
 
     dequeue_count = getattr(msg, "dequeue_count", 1) or 1
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "worker.message_received",
+        request_id=envelope.request_id,
+        dedupe_key=envelope.dedupe_key,
+        queue_latency_ms=queue_latency_ms,
+        existing_status=str((existing or {}).get("Status") or "").lower(),
+        dequeue_count=int(dequeue_count),
+        instrument=envelope.payload.instrument,
+        webhook_event=envelope.payload.event,
+        action=envelope.payload.action,
+        side=envelope.payload.side,
+    )
     STATE_STORE.mark_processing(envelope.dedupe_key, int(dequeue_count))
     log_event(
         LOGGER,
@@ -237,12 +283,22 @@ def trading_worker_poison(msg: func.QueueMessage) -> None:
     raw_body = msg.get_body().decode("utf-8")
     envelope = QueueEnvelope.from_dict(json.loads(raw_body))
     dequeue_count = getattr(msg, "dequeue_count", 0) or 0
-    STATE_STORE.mark_poisoned(envelope.dedupe_key, "Moved to poison queue after repeated failures.", int(dequeue_count))
+    existing = STATE_STORE.get(envelope.dedupe_key) or {}
+    previous_error = str(existing.get("LastError") or "").strip()
+    poison_reason = "Moved to poison queue after repeated failures."
+    STATE_STORE.mark_poisoned(
+        envelope.dedupe_key,
+        poison_reason,
+        int(dequeue_count),
+        previous_error=previous_error,
+    )
     log_event(
         LOGGER,
         logging.ERROR,
         "worker.poison_message",
         request_id=envelope.request_id,
         dedupe_key=envelope.dedupe_key,
+        previous_error=previous_error,
+        poison_reason=poison_reason,
         payload=mask_sensitive(envelope.payload.raw),
     )
