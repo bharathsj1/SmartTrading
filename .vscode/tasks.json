@@ -8,6 +8,27 @@
 			"problemMatcher": "$func-python-watch",
 			"isBackground": true,
 			"dependsOn": "pip install (functions)",
+			"osx": {
+				"options": {
+					"env": {
+						"PATH": "${workspaceFolder}/smarttrade-func/.venv/bin:${env:PATH}"
+					}
+				}
+			},
+			"linux": {
+				"options": {
+					"env": {
+						"PATH": "${workspaceFolder}/smarttrade-func/.venv/bin:${env:PATH}"
+					}
+				}
+			},
+			"windows": {
+				"options": {
+					"env": {
+						"PATH": "${workspaceFolder}\\smarttrade-func\\.venv\\Scripts;${env:PATH}"
+					}
+				}
+			},
 			"options": {
 				"cwd": "${workspaceFolder}/smarttrade-func"
 			}

@@ -11,10 +11,14 @@ from shared.capital_service import CapitalTradingService
 from shared.config import get_settings
 from shared.helpers import log_event, mask_sensitive, safe_json_dumps, utc_now_iso
 from shared.models import NormalizedWebhook, QueueEnvelope
-from shared.storage import QueuePublisher, TradingStateStore
+from shared.storage import QueuePublisher, TradingStateStore, ensure_runtime_infrastructure
 
 SETTINGS = get_settings()
 LOGGER = logging.getLogger("trading.azure_functions")
+try:
+    ensure_runtime_infrastructure(SETTINGS, logger=LOGGER)
+except Exception as exc:
+    LOGGER.warning("storage infrastructure bootstrap failed: %s", exc)
 STATE_STORE = TradingStateStore(SETTINGS)
 QUEUE_PUBLISHER = QueuePublisher(SETTINGS)
 CAPITAL_SERVICE = CapitalTradingService(SETTINGS, logger=LOGGER)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from typing import Any, Optional
 
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
@@ -13,6 +14,33 @@ from shared.helpers import truncate_text, utc_now_iso
 from shared.models import QueueEnvelope
 
 STATE_PARTITION_KEY = "tradingview"
+
+
+def ensure_runtime_infrastructure(settings: Settings, logger: Optional[logging.Logger] = None) -> None:
+    """Create queues and table up front so the Functions host can attach listeners cleanly."""
+
+    if not settings.azure_webjobs_storage:
+        raise RuntimeError("AzureWebJobsStorage is missing.")
+
+    queue_service = QueueServiceClient.from_connection_string(settings.azure_webjobs_storage)
+    for queue_name in (settings.webhook_queue_name, settings.worker_poison_queue_name):
+        try:
+            queue_service.get_queue_client(queue_name).create_queue()
+        except ResourceExistsError:
+            pass
+
+    table_service = TableServiceClient.from_connection_string(settings.azure_webjobs_storage)
+    table_service.create_table_if_not_exists(settings.trading_state_table_name)
+
+    if logger:
+        logger.info(
+            "storage infrastructure ready",
+            extra={
+                "queue": settings.webhook_queue_name,
+                "poison_queue": settings.worker_poison_queue_name,
+                "state_table": settings.trading_state_table_name,
+            },
+        )
 
 
 class QueuePublisher:

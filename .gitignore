@@ -1,0 +1,5 @@
+smarttrade-func/local.settings.json
+smarttrade-func/.venv/
+__pycache__/
+*.pyc
+git
