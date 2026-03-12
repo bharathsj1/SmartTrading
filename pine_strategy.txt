@@ -4,7 +4,7 @@
 
 
 //@version=5
-VERSION                   = 'v1.1'// 2023.10.13
+VERSION                   = 'v1.2'// 2023.10.13
 strategy(
   'XXX',
   shorttitle              = 'Bharath ' + VERSION,
@@ -858,6 +858,19 @@ i_lxQtyTP3   = input.float      (20,        'Qty   TP3'                     , gr
      tooltip =                   T_QTY)
 i_lxLvlSL    = input.float      (0.5,       'Stop Loss'                     , group = G_RISK,
      tooltip =                   T_LVL)
+
+// ATR volatility targets
+useAtrTargets = input.bool(true, "Use ATR based TP/SL", group = G_RISK)
+
+atrTargetLen = input.int(14, "ATR Length", group = G_RISK)
+
+slAtrMult  = input.float(1.3, "SL ATR Multiplier", step = 0.1, group = G_RISK)
+tp1AtrMult = input.float(1.2, "TP1 ATR Multiplier", step = 0.1, group = G_RISK)
+tp2AtrMult = input.float(2.0, "TP2 ATR Multiplier", step = 0.1, group = G_RISK)
+tp3AtrMult = input.float(3.0, "TP3 ATR Multiplier", step = 0.1, group = G_RISK)
+
+atrTarget = ta.atr(atrTargetLen)
+
 i_sxLvlTP1   = i_lxLvlTP1
 i_sxQtyTP1   = i_lxQtyTP1
 i_sxLvlTP2   = i_lxLvlTP2
@@ -890,7 +903,7 @@ useWebhookJson     = input.bool(true,  'Use JSON Webhook Messages', group = G_WE
 tvSecret           = input.string('Smartconnect4u',  'Webhook Secret',            group = G_WEBHOOK)
 instrumentKeyInput = input.string('',  'Instrument Key Override',   group = G_WEBHOOK)
 instrumentKey      = instrumentKeyInput == '' ? syminfo.ticker : instrumentKeyInput
-orderQty           = input.float(1.0,  'Order Quantity',            group = G_WEBHOOK, step = 0.01)
+orderQty           = input.float(10.0,  'Order Quantity',            group = G_WEBHOOK, step = 0.01)
 strategyTag        = input.string('SAIYAN_OCC', 'Strategy Tag',     group = G_WEBHOOK)
 accountTag         = input.string('',  'Account Tag',               group = G_WEBHOOK)
 sendSymbolId       = input.bool(true,  'Send TradingView Symbol',   group = G_WEBHOOK)
@@ -978,16 +991,35 @@ var float entryLine = 0.0
 entryLine   := leTrigger and condition[1] <=  0.0 ? close :
                seTrigger and condition[1] >=  0.0 ? close : nz(entryLine[1])
 //<SL>
-slTopLvl    = i_src + (i_src * (i_lxLvlSL / 100))
-slBotLvl    = i_src - (i_src * (i_sxLvlSL / 100))
-slLine     := condition[1] <=  0.0 and leTrigger ? slBotLvl :
-              condition[1] >=  0.0 and seTrigger ? slTopLvl : nz(slLine[1])
+// % SL
+slTopLvlPct = i_src + (i_src * (i_lxLvlSL / 100))
+slBotLvlPct = i_src - (i_src * (i_sxLvlSL / 100))
+
+// ATR SL
+slTopLvlAtr = entryLine + (atrTarget * slAtrMult)
+slBotLvlAtr = entryLine - (atrTarget * slAtrMult)
+
+slLine := condition[1] <= 0.0 and leTrigger ? (useAtrTargets ? slBotLvlAtr : slBotLvlPct) :
+          condition[1] >= 0.0 and seTrigger ? (useAtrTargets ? slTopLvlAtr : slTopLvlPct) :
+          nz(slLine[1])
+
 slLong      = f_cross(low,  slLine, false)
 slShort     = f_cross(high, slLine, true )
 //<TP1, TP2 & TP3>
-[tp3Line]    = f_tp(condition, 1.2,leTrigger, seTrigger, i_src, i_lxLvlTP3, i_sxLvlTP3)
-[tp2Line]    = f_tp(condition, 1.1,leTrigger, seTrigger, i_src, i_lxLvlTP2, i_sxLvlTP2)
-[tp1Line]    = f_tp(condition, 1.0,leTrigger, seTrigger, i_src, i_lxLvlTP1, i_sxLvlTP1)
+// % TP
+[tp3LinePct] = f_tp(condition, 1.2, leTrigger, seTrigger, i_src, i_lxLvlTP3, i_sxLvlTP3)
+[tp2LinePct] = f_tp(condition, 1.1, leTrigger, seTrigger, i_src, i_lxLvlTP2, i_sxLvlTP2)
+[tp1LinePct] = f_tp(condition, 1.0, leTrigger, seTrigger, i_src, i_lxLvlTP1, i_sxLvlTP1)
+
+// ATR TP
+tp3LineAtr = condition >= 1.0 ? entryLine + atrTarget * tp3AtrMult : entryLine - atrTarget * tp3AtrMult
+tp2LineAtr = condition >= 1.0 ? entryLine + atrTarget * tp2AtrMult : entryLine - atrTarget * tp2AtrMult
+tp1LineAtr = condition >= 1.0 ? entryLine + atrTarget * tp1AtrMult : entryLine - atrTarget * tp1AtrMult
+
+tp3Line = useAtrTargets ? tp3LineAtr : tp3LinePct
+tp2Line = useAtrTargets ? tp2LineAtr : tp2LinePct
+tp1Line = useAtrTargets ? tp1LineAtr : tp1LinePct
+
 tp3Long      = f_cross(high, tp3Line, true )
 tp3Short     = f_cross(low,  tp3Line, false)
 tp2Long      = f_cross(high, tp2Line, true )
@@ -1009,7 +1041,7 @@ switch
     lxTrigger and condition[1] >=  1.0 => condition :=  0.0
     sxTrigger and condition[1] <= -1.0 => condition :=  0.0
 
-cooldownBars = input.int(5, 'Cooldown Bars', minval = 0, group = G_RISK)
+cooldownBars = input.int(3, 'Cooldown Bars', minval = 0, group = G_RISK)
 var int lastTradeBar = na
 canTrade = na(lastTradeBar) or (bar_index - lastTradeBar > cooldownBars)
 
@@ -1019,12 +1051,14 @@ maSlope         = closeSeriesAlt - closeSeriesAlt[slopeLookback]
 allowLongSlope  = maSlope > minSlope
 allowShortSlope = maSlope < -minSlope
 
-atrFast = ta.atr(14)
-atrSlow = ta.sma(atrFast, 50)
-volatilityOK = atrFast > atrSlow
+atrFastLen = input.int(14, 'ATR Fast Length', minval = 1, group = G_RISK)
+atrSlowLen = input.int(50, 'ATR Slow Length', minval = 2, group = G_RISK)
+atrFast = ta.atr(atrFastLen)
+atrSlow = ta.sma(atrFast, atrSlowLen)
+volatilityOK = atrFast > atrSlow * 0.9
 
-longE        = leTrigger and condition[1] <=  0.0 and condition ==  1.0 and allowLongTrend and canTrade and allowLongSlope
-shortE       = seTrigger and condition[1] >=  0.0 and condition == -1.0 and allowShortTrend and canTrade and allowShortSlope
+longE        = leTrigger and condition[1] <=  0.0 and condition ==  1.0 and allowLongTrend and canTrade and allowLongSlope and volatilityOK
+shortE       = seTrigger and condition[1] >=  0.0 and condition == -1.0 and allowShortTrend and canTrade and allowShortSlope and volatilityOK
 longX        = lxTrigger and condition[1] >=  1.0 and condition ==  0.0
 shortX       = sxTrigger and condition[1] <= -1.0 and condition ==  0.0
 longSL       = slLong    and condition[1] >=  1.0 and condition ==  0.0

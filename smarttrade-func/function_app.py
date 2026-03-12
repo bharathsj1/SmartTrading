@@ -22,10 +22,6 @@ from shared.storage import QueuePublisher, TradingStateStore, ensure_runtime_inf
 
 SETTINGS = get_settings()
 LOGGER = logging.getLogger("trading.azure_functions")
-try:
-    ensure_runtime_infrastructure(SETTINGS, logger=LOGGER)
-except Exception as exc:
-    LOGGER.warning("storage infrastructure bootstrap failed: %s", exc)
 STATE_STORE = TradingStateStore(SETTINGS)
 QUEUE_PUBLISHER = QueuePublisher(SETTINGS)
 CAPITAL_SERVICE = CapitalTradingService(SETTINGS, logger=LOGGER)
@@ -77,7 +73,6 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
             logging.WARNING,
             "webhook.unauthorized",
             request_id=request_id,
-            payload=mask_sensitive(webhook.raw),
         )
         return _json_response(
             {"ok": False, "error": "unauthorized", "message": "Invalid webhook secret."},
@@ -92,30 +87,9 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
         payload=webhook,
     )
 
-    if not STATE_STORE.reserve_webhook(envelope):
-        log_event(
-            LOGGER,
-            logging.INFO,
-            "webhook.duplicate_ignored",
-            request_id=request_id,
-            dedupe_key=dedupe_key,
-            payload=mask_sensitive(webhook.raw),
-        )
-        return _json_response(
-            {
-                "ok": True,
-                "message": "Webhook accepted",
-                "request_id": request_id,
-                "duplicate": True,
-            },
-            200,
-        )
-
     try:
         QUEUE_PUBLISHER.enqueue(envelope)
-        STATE_STORE.mark_enqueued(dedupe_key)
     except Exception as exc:
-        STATE_STORE.mark_enqueue_failed(dedupe_key, str(exc))
         log_event(
             LOGGER,
             logging.ERROR,
@@ -135,8 +109,11 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
         "webhook.accepted",
         request_id=request_id,
         dedupe_key=dedupe_key,
-        payload=mask_sensitive(webhook.raw),
+        webhook_event=webhook.event,
+        side=webhook.side,
+        instrument=webhook.instrument,
     )
+
     return _json_response(
         {"ok": True, "message": "Webhook accepted", "request_id": request_id},
         200,
@@ -152,12 +129,27 @@ def trading_worker(msg: func.QueueMessage) -> None:
     envelope = QueueEnvelope.from_dict(json.loads(raw_body))
     processing_started_at = utc_now_iso()
     queue_latency_ms = milliseconds_between(envelope.received_at, processing_started_at)
+
     existing = STATE_STORE.get(envelope.dedupe_key)
-    if existing and str(existing.get("Status") or "").lower() == "completed":
+    if existing:
+        status = str(existing.get("Status") or "").lower()
+        if status in {"completed", "processing", "enqueued", "accepted"}:
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "worker.duplicate_skipped",
+                request_id=envelope.request_id,
+                dedupe_key=envelope.dedupe_key,
+                status=status,
+                queue_latency_ms=queue_latency_ms,
+            )
+            return
+
+    if not STATE_STORE.reserve_webhook(envelope):
         log_event(
             LOGGER,
             logging.INFO,
-            "worker.skip_completed",
+            "worker.reserve_failed_duplicate",
             request_id=envelope.request_id,
             dedupe_key=envelope.dedupe_key,
             queue_latency_ms=queue_latency_ms,
@@ -186,6 +178,7 @@ def trading_worker(msg: func.QueueMessage) -> None:
         execution_duration_ms = int((time.perf_counter() - started) * 1000)
         completed_at = utc_now_iso()
         end_to_end_latency_ms = milliseconds_between(envelope.received_at, completed_at)
+
         result["timing"] = {
             "received_at": envelope.received_at,
             "processing_started_at": processing_started_at,
@@ -194,6 +187,7 @@ def trading_worker(msg: func.QueueMessage) -> None:
             "execution_duration_ms": execution_duration_ms,
             "end_to_end_latency_ms": end_to_end_latency_ms,
         }
+
         if not result.get("ok"):
             STATE_STORE.mark_failed(envelope.dedupe_key, safe_json_dumps(result))
             log_event(
@@ -208,6 +202,7 @@ def trading_worker(msg: func.QueueMessage) -> None:
                 result=mask_sensitive(result),
             )
             raise RuntimeError(safe_json_dumps(result))
+
         STATE_STORE.mark_completed(envelope.dedupe_key, result)
         log_event(
             LOGGER,
@@ -220,6 +215,7 @@ def trading_worker(msg: func.QueueMessage) -> None:
             end_to_end_latency_ms=end_to_end_latency_ms,
             result=mask_sensitive(result),
         )
+
     except Exception as exc:
         STATE_STORE.mark_failed(envelope.dedupe_key, str(exc))
         log_event(
@@ -231,7 +227,6 @@ def trading_worker(msg: func.QueueMessage) -> None:
             error=str(exc),
         )
         raise
-
 
 @app.queue_trigger(
     arg_name="msg",
