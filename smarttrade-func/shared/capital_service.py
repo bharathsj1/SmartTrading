@@ -777,6 +777,18 @@ class CapitalTradingService:
             payload=mask_sensitive(webhook.raw),
         )
 
+        if webhook.price is not None:
+            log_event(
+                self._logger,
+                logging.INFO,
+                "capital.market_price_ignored",
+                request_id=request_id,
+                dedupe_key=dedupe_key,
+                input_price=webhook.price,
+                instrument=instrument_key,
+                route_event=event,
+            )
+
         if event in open_events:
             open_action = action or side
             if not open_action and event in {"long", "buy"}:
