@@ -98,7 +98,7 @@ class NormalizedWebhook:
         )
 
     def effective_identifier(self) -> str:
-        return self.identifier or self.account
+        return self.identifier
 
     def dedupe_material(self) -> str:
         normalized_side = self.action or self.side or self.event
