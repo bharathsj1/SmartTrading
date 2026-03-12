@@ -135,7 +135,6 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
         200,
     )
 
-
 @app.queue_trigger(
     arg_name="msg",
     queue_name=SETTINGS.webhook_queue_name,
