@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -9,7 +10,13 @@ import azure.functions as func
 
 from shared.capital_service import CapitalTradingService
 from shared.config import get_settings
-from shared.helpers import log_event, mask_sensitive, safe_json_dumps, utc_now_iso
+from shared.helpers import (
+    log_event,
+    mask_sensitive,
+    milliseconds_between,
+    safe_json_dumps,
+    utc_now_iso,
+)
 from shared.models import NormalizedWebhook, QueueEnvelope
 from shared.storage import QueuePublisher, TradingStateStore, ensure_runtime_infrastructure
 
@@ -143,6 +150,8 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
 def trading_worker(msg: func.QueueMessage) -> None:
     raw_body = msg.get_body().decode("utf-8")
     envelope = QueueEnvelope.from_dict(json.loads(raw_body))
+    processing_started_at = utc_now_iso()
+    queue_latency_ms = milliseconds_between(envelope.received_at, processing_started_at)
     existing = STATE_STORE.get(envelope.dedupe_key)
     if existing and str(existing.get("Status") or "").lower() == "completed":
         log_event(
@@ -151,22 +160,66 @@ def trading_worker(msg: func.QueueMessage) -> None:
             "worker.skip_completed",
             request_id=envelope.request_id,
             dedupe_key=envelope.dedupe_key,
+            queue_latency_ms=queue_latency_ms,
         )
         return
 
     dequeue_count = getattr(msg, "dequeue_count", 1) or 1
     STATE_STORE.mark_processing(envelope.dedupe_key, int(dequeue_count))
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "worker.processing_started",
+        request_id=envelope.request_id,
+        dedupe_key=envelope.dedupe_key,
+        dequeue_count=int(dequeue_count),
+        queue_latency_ms=queue_latency_ms,
+    )
 
     try:
+        started = time.perf_counter()
         result = CAPITAL_SERVICE.execute_webhook(
             envelope.payload,
             request_id=envelope.request_id,
             dedupe_key=envelope.dedupe_key,
         )
+        execution_duration_ms = int((time.perf_counter() - started) * 1000)
+        completed_at = utc_now_iso()
+        end_to_end_latency_ms = milliseconds_between(envelope.received_at, completed_at)
+        result["timing"] = {
+            "received_at": envelope.received_at,
+            "processing_started_at": processing_started_at,
+            "completed_at": completed_at,
+            "queue_latency_ms": queue_latency_ms,
+            "execution_duration_ms": execution_duration_ms,
+            "end_to_end_latency_ms": end_to_end_latency_ms,
+        }
         if not result.get("ok"):
             STATE_STORE.mark_failed(envelope.dedupe_key, safe_json_dumps(result))
+            log_event(
+                LOGGER,
+                logging.ERROR,
+                "worker.execution_timing",
+                request_id=envelope.request_id,
+                dedupe_key=envelope.dedupe_key,
+                queue_latency_ms=queue_latency_ms,
+                execution_duration_ms=execution_duration_ms,
+                end_to_end_latency_ms=end_to_end_latency_ms,
+                result=mask_sensitive(result),
+            )
             raise RuntimeError(safe_json_dumps(result))
         STATE_STORE.mark_completed(envelope.dedupe_key, result)
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "worker.execution_timing",
+            request_id=envelope.request_id,
+            dedupe_key=envelope.dedupe_key,
+            queue_latency_ms=queue_latency_ms,
+            execution_duration_ms=execution_duration_ms,
+            end_to_end_latency_ms=end_to_end_latency_ms,
+            result=mask_sensitive(result),
+        )
     except Exception as exc:
         STATE_STORE.mark_failed(envelope.dedupe_key, str(exc))
         log_event(

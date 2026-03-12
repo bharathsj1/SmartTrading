@@ -666,6 +666,7 @@ class CapitalTradingService:
 
     def execute_webhook(self, webhook: NormalizedWebhook, request_id: str, dedupe_key: str) -> dict[str, Any]:
         # Azure Functions change: secret validation moved to the HTTP ingress function.
+        started = time.perf_counter()
         identifier = webhook.effective_identifier()
         event = webhook.event
         action = webhook.action
@@ -683,7 +684,7 @@ class CapitalTradingService:
             else:
                 event = "close"
 
-        open_events = {"entry", "open", "long", "short", "buy", "sell"}
+        open_events = {"entry", "open", "long", "short", "buy", "sell", "reversal", "reverse", "flip"}
         close_events = {"close", "exit"}
 
         log_event(
@@ -732,6 +733,7 @@ class CapitalTradingService:
             "capital.execution.finish",
             request_id=request_id,
             dedupe_key=dedupe_key,
+            duration_ms=int((time.perf_counter() - started) * 1000),
             result=mask_sensitive(result),
         )
         return result

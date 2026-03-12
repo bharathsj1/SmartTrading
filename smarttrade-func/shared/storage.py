@@ -131,11 +131,12 @@ class TradingStateStore:
             if not existing:
                 return False
             status = str(existing.get("Status") or "").lower()
-            if status == "enqueue_failed":
+            if status in {"enqueue_failed", "failed", "poisoned"}:
                 existing["Status"] = "accepted"
                 existing["RequestId"] = envelope.request_id
                 existing["ReceivedAt"] = envelope.received_at
                 existing["UpdatedAt"] = utc_now_iso()
+                existing["LastError"] = ""
                 self._table_client().upsert_entity(existing, mode=UpdateMode.MERGE)
                 return True
             return False
