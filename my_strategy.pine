@@ -1041,6 +1041,22 @@ switch
     lxTrigger and condition[1] >=  1.0 => condition :=  0.0
     sxTrigger and condition[1] <= -1.0 => condition :=  0.0
 
+cooldownBars = input.int(3, 'Cooldown Bars', minval = 0, group = G_RISK)
+var int lastTradeBar = na
+canTrade = na(lastTradeBar) or (bar_index - lastTradeBar > cooldownBars)
+
+slopeLookback   = input.int(3, 'Slope Lookback', minval = 1, group = G_RISK)
+minSlope        = input.float(0.5, 'Min Slope', step = 0.1, group = G_RISK)
+maSlope         = closeSeriesAlt - closeSeriesAlt[slopeLookback]
+allowLongSlope  = maSlope > minSlope
+allowShortSlope = maSlope < -minSlope
+
+atrFastLen = input.int(14, 'ATR Fast Length', minval = 1, group = G_RISK)
+atrSlowLen = input.int(50, 'ATR Slow Length', minval = 2, group = G_RISK)
+atrFast = ta.atr(atrFastLen)
+atrSlow = ta.sma(atrFast, atrSlowLen)
+volatilityOK = atrFast > atrSlow * 0.9
+
 longE        = leTrigger and condition[1] <=  0.0 and condition ==  1.0
 shortE       = seTrigger and condition[1] >=  0.0 and condition == -1.0
 longX        = lxTrigger and condition[1] >=  1.0 and condition ==  0.0
@@ -1054,24 +1070,34 @@ shortTP2     = tp2Short  and condition[1] == -1.1 and condition == -1.2
 longTP1      = tp1Long   and condition[1] ==  1.0 and condition ==  1.1
 shortTP1     = tp1Short  and condition[1] == -1.0 and condition == -1.1
 
+// Build webhook SL/TP explicitly from trade side so entry alerts never inherit
+// the wrong direction from transient state on the signal bar.
+longSlWebhook  = useAtrTargets ? entryLine - atrTarget * slAtrMult  : entryLine - entryLine * (i_lxLvlSL / 100)
+shortSlWebhook = useAtrTargets ? entryLine + atrTarget * slAtrMult  : entryLine + entryLine * (i_sxLvlSL / 100)
+longTp1Webhook = useAtrTargets ? entryLine + atrTarget * tp1AtrMult : entryLine + entryLine * (i_lxLvlTP1 / 100)
+longTp2Webhook = useAtrTargets ? entryLine + atrTarget * tp2AtrMult : entryLine + entryLine * (i_lxLvlTP2 / 100)
+longTp3Webhook = useAtrTargets ? entryLine + atrTarget * tp3AtrMult : entryLine + entryLine * (i_lxLvlTP3 / 100)
+shortTp1Webhook = useAtrTargets ? entryLine - atrTarget * tp1AtrMult : entryLine - entryLine * (i_sxLvlTP1 / 100)
+shortTp2Webhook = useAtrTargets ? entryLine - atrTarget * tp2AtrMult : entryLine - entryLine * (i_sxLvlTP2 / 100)
+shortTp3Webhook = useAtrTargets ? entryLine - atrTarget * tp3AtrMult : entryLine - entryLine * (i_sxLvlTP3 / 100)
 
 //──────────────────────────────────────────────────────────────────────────────
 // RUNTIME WEBHOOK MESSAGES (ADDED ONLY - NO LOGIC REMOVED)
 //──────────────────────────────────────────────────────────────────────────────
-leWebhookMsg    = useWebhookJson ? f_entry_json('long' , 'LE'   , 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_leMsg
-seWebhookMsg    = useWebhookJson ? f_entry_json('short', 'SE'   , 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_seMsg
+leWebhookMsg    = useWebhookJson ? f_entry_json('long' , 'LE'   , 'MA_CROSS', 'trend', longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_leMsg
+seWebhookMsg    = useWebhookJson ? f_entry_json('short', 'SE'   , 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_seMsg
 
-lxMsgSLWebhook  = useWebhookJson ? f_exit_json ('long' , 'SL'   , 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_lxMsgSL
-lxMsgTP1Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP1', 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_lxMsgTP1
-lxMsgTP2Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP2', 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_lxMsgTP2
-lxMsgTP3Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP3', 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_lxMsgTP3
-lxMsgWebhook    = useWebhookJson ? f_close_json('long' , 'LX'   , 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_lxMsg
+lxMsgSLWebhook  = useWebhookJson ? f_exit_json ('long' , 'SL'   , 'MA_CROSS', 'trend', longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgSL
+lxMsgTP1Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP1', 'MA_CROSS', 'trend', longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP1
+lxMsgTP2Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP2', 'MA_CROSS', 'trend', longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP2
+lxMsgTP3Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP3', 'MA_CROSS', 'trend', longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP3
+lxMsgWebhook    = useWebhookJson ? f_close_json('long' , 'LX'   , 'MA_CROSS', 'trend', longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsg
 
-sxMsgSLWebhook  = useWebhookJson ? f_exit_json ('short', 'SL'   , 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_sxMsgSL
-sxMsgTP1Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP1', 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_sxMsgTP1
-sxMsgTP2Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP2', 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_sxMsgTP2
-sxMsgTP3Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP3', 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_sxMsgTP3
-sxMsgWebhook    = useWebhookJson ? f_close_json('short', 'SX'   , 'MA_CROSS', 'trend', slLine, tp1Line, tp2Line, tp3Line) : i_sxMsg
+sxMsgSLWebhook  = useWebhookJson ? f_exit_json ('short', 'SL'   , 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgSL
+sxMsgTP1Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP1', 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP1
+sxMsgTP2Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP2', 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP2
+sxMsgTP3Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP3', 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP3
+sxMsgWebhook    = useWebhookJson ? f_close_json('short', 'SX'   , 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsg
 
 
 // ——————————— <strategy_calls> {
@@ -1082,40 +1108,30 @@ if strategy.position_size <= 0 and longE and barstate.isconfirmed
       strategy.long,
       alert_message    = leWebhookMsg,
       comment          = 'LE')
-if strategy.position_size > 0 and condition ==  1.0
-    strategy.exit(
-      id               = 'LXTP1',
-      from_entry       = 'Long',
+if strategy.position_size > 0 and longTP1 and barstate.isconfirmed
+    strategy.close(
+      'Long',
       qty_percent      = i_lxQtyTP1,
-      limit            = tp1Line,
-      stop             = slLine,
-      comment_profit   = 'LXTP1',
-      comment_loss     = 'SL',
-      alert_profit     = lxMsgTP1Webhook,
-      alert_loss       = lxMsgSLWebhook)
-if strategy.position_size > 0 and condition ==  1.1
-    strategy.exit(
-      id               = 'LXTP2',
-      from_entry       = 'Long',
+      alert_message    = lxMsgTP1Webhook,
+      comment          = 'LXTP1')
+if strategy.position_size > 0 and longTP2 and barstate.isconfirmed
+    strategy.close(
+      'Long',
       qty_percent      = i_lxQtyTP2,
-      limit            = tp2Line,
-      stop             = slLine,
-      comment_profit   = 'LXTP2',
-      comment_loss     = 'SL',
-      alert_profit     = lxMsgTP2Webhook,
-      alert_loss       = lxMsgSLWebhook)
-if strategy.position_size > 0 and condition ==  1.2
-    strategy.exit(
-      id               = 'LXTP3',
-      from_entry       = 'Long',
+      alert_message    = lxMsgTP2Webhook,
+      comment          = 'LXTP2')
+if strategy.position_size > 0 and longTP3 and barstate.isconfirmed
+    strategy.close(
+      'Long',
       qty_percent      = i_lxQtyTP3,
-      limit            = tp3Line,
-      stop             = slLine,
-      comment_profit   = 'LXTP3',
-      comment_loss     = 'SL',
-      alert_profit     = lxMsgTP3Webhook,
-      alert_loss       = lxMsgSLWebhook)
-if longX
+      alert_message    = lxMsgTP3Webhook,
+      comment          = 'LXTP3')
+if strategy.position_size > 0 and longSL and barstate.isconfirmed
+    strategy.close(
+      'Long',
+      alert_message    = lxMsgSLWebhook,
+      comment          = 'SL')
+if strategy.position_size > 0 and longX and barstate.isconfirmed
     strategy.close(
       'Long',
       alert_message    = lxMsgWebhook,
@@ -1127,40 +1143,30 @@ if strategy.position_size >= 0 and shortE and barstate.isconfirmed
       strategy.short,
       alert_message    = seWebhookMsg,
       comment          = 'SE')
-if strategy.position_size < 0 and condition == -1.0
-    strategy.exit(
-      id               = 'SXTP1',
-      from_entry       = 'Short',
+if strategy.position_size < 0 and shortTP1 and barstate.isconfirmed
+    strategy.close(
+      'Short',
       qty_percent      = i_sxQtyTP1,
-      limit            = tp1Line,
-      stop             = slLine,
-      comment_profit   = 'SXTP1',
-      comment_loss     = 'SL',
-      alert_profit     = sxMsgTP1Webhook,
-      alert_loss       = sxMsgSLWebhook)
-if strategy.position_size < 0 and condition == -1.1
-    strategy.exit(
-      id               = 'SXTP2',
-      from_entry       = 'Short',
+      alert_message    = sxMsgTP1Webhook,
+      comment          = 'SXTP1')
+if strategy.position_size < 0 and shortTP2 and barstate.isconfirmed
+    strategy.close(
+      'Short',
       qty_percent      = i_sxQtyTP2,
-      limit            = tp2Line,
-      stop             = slLine,
-      comment_profit   = 'SXTP2',
-      comment_loss     = 'SL',
-      alert_profit     = sxMsgTP2Webhook,
-      alert_loss       = sxMsgSLWebhook)
-if strategy.position_size < 0 and condition == -1.2
-    strategy.exit(
-      id               = 'SXTP3',
-      from_entry       = 'Short',
+      alert_message    = sxMsgTP2Webhook,
+      comment          = 'SXTP2')
+if strategy.position_size < 0 and shortTP3 and barstate.isconfirmed
+    strategy.close(
+      'Short',
       qty_percent      = i_sxQtyTP3,
-      limit            = tp3Line,
-      stop             = slLine,
-      comment_profit   = 'SXTP3',
-      comment_loss     = 'SL',
-      alert_profit     = sxMsgTP3Webhook,
-      alert_loss       = sxMsgSLWebhook)
-if shortX
+      alert_message    = sxMsgTP3Webhook,
+      comment          = 'SXTP3')
+if strategy.position_size < 0 and shortSL and barstate.isconfirmed
+    strategy.close(
+      'Short',
+      alert_message    = sxMsgSLWebhook,
+      comment          = 'SL')
+if strategy.position_size < 0 and shortX and barstate.isconfirmed
     strategy.close(
       'Short',
       alert_message    = sxMsgWebhook,
