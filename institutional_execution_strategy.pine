@@ -90,9 +90,9 @@ tp1AtrExt              = input.float(1.0, "TP1 ATR", minval = 0.2, step = 0.1, g
 tp2AtrExt              = input.float(2.0, "TP2 ATR", minval = 0.2, step = 0.1, group = groupRisk, inline = "atrtp")
 tp3AtrExt              = input.float(3.2, "TP3 ATR", minval = 0.2, step = 0.1, group = groupRisk, inline = "atrtp")
 tpStructureLookback    = input.int(40, "Structure target lookback", minval = 5, group = groupRisk)
-tp1ExitPctInput        = input.float(40.0, "TP1 exit %", minval = 1.0, maxval = 100.0, step = 1.0, group = groupRisk, inline = "alloc")
-tp2ExitPctInput        = input.float(35.0, "TP2 exit %", minval = 1.0, maxval = 100.0, step = 1.0, group = groupRisk, inline = "alloc")
-tp3ExitPctInput        = input.float(25.0, "TP3 exit %", minval = 1.0, maxval = 100.0, step = 1.0, group = groupRisk, inline = "alloc")
+tp1ExitPctInput        = input.float(50.0, "TP1 exit %", minval = 1.0, maxval = 100.0, step = 1.0, group = groupRisk, inline = "alloc")
+tp2ExitPctInput        = input.float(20.0, "TP2 exit %", minval = 1.0, maxval = 100.0, step = 1.0, group = groupRisk, inline = "alloc")
+tp3ExitPctInput        = input.float(30.0, "Runner %", minval = 1.0, maxval = 100.0, step = 1.0, group = groupRisk, inline = "alloc")
 
 moveStopTrigger        = input.string("After TP1", "Stop management trigger", options = ["None", "After TP1", "After TP2"], group = groupMgmt)
 breakevenMode          = input.string("Entry", "Breakeven mode", options = ["Entry", "Entry + Buffer"], group = groupMgmt)
@@ -680,12 +680,12 @@ tradeOrdersActive = tradeActive and (allowIntrabarProcessing or (not na(tradeEnt
 if tradeOrdersActive and tradeDirection == 1
     strategy.exit("Long TP1", "Long", stop = tradeActiveStop, limit = tradeTp1, qty_percent = tp1QtyPct, comment = "TP1")
     strategy.exit("Long TP2", "Long", stop = tradeActiveStop, limit = tradeTp2, qty_percent = tp2QtyPct, comment = "TP2")
-    strategy.exit("Long TP3", "Long", stop = tradeActiveStop, limit = tradeTp3, qty_percent = 100, comment = "TP3")
+    strategy.exit("Long Runner", "Long", stop = tradeActiveStop, qty_percent = tp3QtyPct, comment = "Runner Stop")
 
 if tradeOrdersActive and tradeDirection == -1
     strategy.exit("Short TP1", "Short", stop = tradeActiveStop, limit = tradeTp1, qty_percent = tp1QtyPct, comment = "TP1")
     strategy.exit("Short TP2", "Short", stop = tradeActiveStop, limit = tradeTp2, qty_percent = tp2QtyPct, comment = "TP2")
-    strategy.exit("Short TP3", "Short", stop = tradeActiveStop, limit = tradeTp3, qty_percent = 100, comment = "TP3")
+    strategy.exit("Short Runner", "Short", stop = tradeActiveStop, qty_percent = tp3QtyPct, comment = "Runner Stop")
 
 oppositeSignalExit = tradeActive and forceExitOnOpposite and execNow and ((tradeDirection == 1 and rawShortSignal) or (tradeDirection == -1 and rawLongSignal))
 timeExitTriggered  = tradeActive and useTimeExit and execNow and not na(tradeEntryBar) and bar_index - tradeEntryBar >= timeExitBars
@@ -730,9 +730,6 @@ if tradeOrdersActive
             remainingPositionPct -= tp2QtyPct
         if not tp3Hit and tp3Touched
             tp3Hit := true
-            remainingPositionPct := 0.0
-            closeReason := "TP3"
-            closePriceTracked := tradeTp3
 
 closedCampaign = tradeActive and closeReason != ""
 
@@ -778,8 +775,6 @@ if closedCampaign
     tp2RRealized = tp2Hit ? tp2QtyPct / 100.0 * (tradeDirection == 1 ? (tradeTp2 - tradeEntryPrice) / tradeInitialRisk : (tradeEntryPrice - tradeTp2) / tradeInitialRisk) : 0.0
     remainingFrac = math.max(remainingPositionPct, 0.0) / 100.0
     remainderR = remainingFrac * (tradeDirection == 1 ? (closePriceTracked - tradeEntryPrice) / tradeInitialRisk : (tradeEntryPrice - closePriceTracked) / tradeInitialRisk)
-    if closeReason == "TP3"
-        remainderR := tp3QtyPct / 100.0 * (tradeDirection == 1 ? (tradeTp3 - tradeEntryPrice) / tradeInitialRisk : (tradeEntryPrice - tradeTp3) / tradeInitialRisk)
     exitR := tp1RRealized + tp2RRealized + remainderR
     lastClosedRValue := exitR
     totalClosedR += exitR
@@ -878,8 +873,8 @@ if tradeActive and not tp2Hit[1] and tp2Hit
 
 if closedCampaign
     labelPrice = na(closePriceTracked) ? close : closePriceTracked
-    closeLabelColor = closeReason == "TP3" ? color.blue : ((closeReason == "Opposite Signal" or closeReason == "Time Exit") ? color.orange : color.red)
-    closeLabelText = closeReason == "TP3" ? (lastClosedDirection == 1 ? "LXTP3" : "SXTP3") : closeReason == "SL" ? (lastClosedDirection == 1 ? "LXSL" : "SXSL") : closeReason == "BE" ? (lastClosedDirection == 1 ? "LXBE" : "SXBE") : closeReason == "TRAIL" ? (lastClosedDirection == 1 ? "LXTRL" : "SXTRL") : closeReason
+    closeLabelColor = (closeReason == "Opposite Signal" or closeReason == "Time Exit") ? color.orange : color.red
+    closeLabelText = closeReason == "SL" ? (lastClosedDirection == 1 ? "LXSL" : "SXSL") : closeReason == "BE" ? (lastClosedDirection == 1 ? "LXBE" : "SXBE") : closeReason == "TRAIL" ? (lastClosedDirection == 1 ? "LXTRL" : "SXTRL") : closeReason
     exitLabel = label.new(bar_index, labelPrice, closeLabelText + (showRLabels ? "\n" + f_signed_r_text(lastClosedRValue) : ""), style = lastClosedDirection == 1 ? label.style_label_down : label.style_label_up, color = color.new(closeLabelColor, 0), textcolor = color.white, size = size.small)
     f_register_trade_label(historicalTradeLabels, exitLabel, maxHistoricalLabels)
 

@@ -850,11 +850,11 @@ i_lxQtyTP1   = input.float      (50,        'Qty   TP1'                     , gr
      tooltip =                   T_QTY)
 i_lxLvlTP2   = input.float      (1.5,       'Level TP2'                     , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP2   = input.float      (30,        'Qty   TP2'                     , group = G_RISK,
+i_lxQtyTP2   = input.float      (20,        'Qty   TP2'                     , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlTP3   = input.float      (2,         'Level TP3'                     , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP3   = input.float      (20,        'Qty   TP3'                     , group = G_RISK,
+i_lxQtyTP3   = input.float      (30,        'Runner Qty'                    , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlSL    = input.float      (0.5,       'Stop Loss'                     , group = G_RISK,
      tooltip =                   T_LVL)
@@ -1120,12 +1120,6 @@ if strategy.position_size > 0 and longTP2 and barstate.isconfirmed
       qty_percent      = i_lxQtyTP2,
       alert_message    = lxMsgTP2Webhook,
       comment          = 'LXTP2')
-if strategy.position_size > 0 and longTP3 and barstate.isconfirmed
-    strategy.close(
-      'Long',
-      qty_percent      = i_lxQtyTP3,
-      alert_message    = lxMsgTP3Webhook,
-      comment          = 'LXTP3')
 if strategy.position_size > 0 and longSL and barstate.isconfirmed
     strategy.close(
       'Long',
@@ -1155,12 +1149,6 @@ if strategy.position_size < 0 and shortTP2 and barstate.isconfirmed
       qty_percent      = i_sxQtyTP2,
       alert_message    = sxMsgTP2Webhook,
       comment          = 'SXTP2')
-if strategy.position_size < 0 and shortTP3 and barstate.isconfirmed
-    strategy.close(
-      'Short',
-      qty_percent      = i_sxQtyTP3,
-      alert_message    = sxMsgTP3Webhook,
-      comment          = 'SXTP3')
 if strategy.position_size < 0 and shortSL and barstate.isconfirmed
     strategy.close(
       'Short',
