@@ -169,6 +169,28 @@ class CapitalTradingService:
             raise ValueError("Unknown instrument selected.")
         return spec
 
+    def _normalize_instrument_key(self, instrument_key: str) -> str:
+        key = str(instrument_key or "").strip()
+        if ":" in key:
+            key = key.split(":", 1)[1].strip()
+        return INSTRUMENT_ALIASES.get(key.upper(), key)
+
+    def _resolve_order_quantity(self, webhook: NormalizedWebhook) -> float:
+        quantity = webhook.quantity if webhook.quantity > 0 else 1.0
+        instrument_candidates = (
+            webhook.instrument,
+            webhook.ticker,
+            self._settings.default_instrument,
+        )
+        normalized_keys = {
+            self._normalize_instrument_key(candidate) for candidate in instrument_candidates if candidate
+        }
+        if "metal_gold_spot" in normalized_keys:
+            return 10.0
+        if "metal_silver_spot" in normalized_keys:
+            return 1000.0
+        return quantity
+
     def _must_have_credentials(self) -> None:
         if not self._api_key:
             raise RuntimeError("CAPITAL_API_KEY is missing.")
@@ -747,7 +769,7 @@ class CapitalTradingService:
         event = webhook.event
         action = webhook.action
         side = webhook.side
-        quantity = webhook.quantity if webhook.quantity > 0 else 1.0
+        quantity = self._resolve_order_quantity(webhook)
         instrument_key = webhook.instrument or self._settings.default_instrument
         epic = webhook.epic
         deal_id = webhook.deal_id

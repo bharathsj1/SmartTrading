@@ -1,0 +1,916 @@
+//@version=5
+strategy(
+     "Institutional Regime Execution Strategy",
+     shorttitle = "IRES v1",
+     overlay = true,
+     pyramiding = 0,
+     calc_on_every_tick = true,
+     calc_on_order_fills = true,
+     process_orders_on_close = true,
+     default_qty_type = strategy.fixed,
+     default_qty_value = 1,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.01,
+     max_labels_count = 500,
+     max_lines_count = 500,
+     max_boxes_count = 100)
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+groupExec       = "01. Execution"
+groupRegime     = "02. Market Regime"
+groupEntry      = "03. Entry Engine"
+groupRisk       = "04. Stop Loss & Targets"
+groupMgmt       = "05. Position Management"
+groupFilters    = "06. Quality Filters"
+groupVisuals    = "07. Visuals & Dashboard"
+
+allowIntrabarProcessing = input.bool(false, "Allow intrabar signal processing", group = groupExec, tooltip = "When disabled, new entries and manual closes are confirmed on bar close only.")
+enableLongs            = input.bool(true, "Enable longs", group = groupExec, inline = "dir")
+enableShorts           = input.bool(true, "Enable shorts", group = groupExec, inline = "dir")
+modelAccountSize       = input.float(100000.0, "Model account size", minval = 1000.0, step = 1000.0, group = groupExec, tooltip = "Used for stop-distance based quantity sizing.")
+riskPerTradePct        = input.float(1.0, "Risk per trade (%)", minval = 0.1, maxval = 5.0, step = 0.1, group = groupExec)
+minOrderQty            = input.float(1.0, "Minimum order quantity", minval = 0.0001, step = 0.0001, group = groupExec)
+maxOrderQty            = input.float(1000000.0, "Maximum order quantity", minval = 0.0001, step = 1.0, group = groupExec)
+
+fastEmaLen             = input.int(21, "Fast EMA", minval = 2, group = groupRegime, inline = "ema")
+slowEmaLen             = input.int(55, "Slow EMA", minval = 3, group = groupRegime, inline = "ema")
+regimeSlopeLen         = input.int(5, "Slow EMA slope bars", minval = 1, group = groupRegime)
+useHTFConfirm          = input.bool(true, "Use HTF EMA confirmation", group = groupRegime, inline = "htf")
+htfTimeframe           = input.timeframe("240", "HTF", group = groupRegime, inline = "htf")
+useAdxFilter           = input.bool(true, "Use ADX filter", group = groupRegime, inline = "adx")
+adxLen                 = input.int(14, "Length", minval = 2, group = groupRegime, inline = "adx")
+adxThreshold           = input.float(20.0, "Threshold", minval = 5.0, step = 0.5, group = groupRegime, inline = "adx")
+useAtrRegimeFilter     = input.bool(true, "Use ATR regime filter", group = groupRegime, inline = "atrreg")
+atrLen                 = input.int(14, "ATR length", minval = 2, group = groupRegime, inline = "atrreg")
+minAtrPctOfPrice       = input.float(0.05, "Min ATR % of price", minval = 0.01, step = 0.01, group = groupRegime, inline = "atrreg")
+useSessionFilter       = input.bool(false, "Use session filter", group = groupRegime, inline = "session")
+tradeSession           = input.session("0700-1700", "Session", group = groupRegime, inline = "session")
+noTradeFirstMinutes    = input.int(0, "Skip first X minutes", minval = 0, maxval = 180, group = groupRegime)
+useVolumeFilter        = input.bool(false, "Use volume participation filter", group = groupRegime, inline = "vol")
+volumeLen              = input.int(20, "Length", minval = 2, group = groupRegime, inline = "vol")
+volumeMultiplier       = input.float(1.1, "Multiple", minval = 0.1, step = 0.1, group = groupRegime, inline = "vol")
+useVwapFilter          = input.bool(false, "Use VWAP filter", group = groupRegime)
+
+entryMode              = input.string("Auto", "Entry mode", options = ["Auto", "Breakout", "Pullback", "Reversal-to-Trend"], group = groupEntry)
+breakoutLookback       = input.int(20, "Breakout lookback", minval = 2, group = groupEntry)
+pullbackAtrTolerance   = input.float(0.35, "Pullback tolerance (ATR)", minval = 0.05, step = 0.05, group = groupEntry)
+reversalLookback       = input.int(10, "Reversal lookback", minval = 2, group = groupEntry)
+pivotLen               = input.int(3, "Swing pivot length", minval = 1, group = groupEntry)
+useStructureFilter     = input.bool(true, "Use BOS / swing structure filter", group = groupEntry)
+useRsiFilter           = input.bool(true, "Use RSI filter", group = groupEntry, inline = "rsi")
+rsiLen                 = input.int(14, "Length", minval = 2, group = groupEntry, inline = "rsi")
+rsiLongThreshold       = input.float(55.0, "Long >=", minval = 1.0, maxval = 99.0, step = 0.5, group = groupEntry, inline = "rsi")
+rsiShortThreshold      = input.float(45.0, "Short <=", minval = 1.0, maxval = 99.0, step = 0.5, group = groupEntry, inline = "rsi")
+useMacdFilter          = input.bool(true, "Use MACD filter", group = groupEntry, inline = "macd")
+macdFastLen            = input.int(12, "Fast", minval = 2, group = groupEntry, inline = "macd")
+macdSlowLen            = input.int(26, "Slow", minval = 3, group = groupEntry, inline = "macd")
+macdSignalLen          = input.int(9, "Signal", minval = 2, group = groupEntry, inline = "macd")
+useEngulfingFilter     = input.bool(false, "Require engulfing confirmation", group = groupEntry)
+useWickRejectFilter    = input.bool(false, "Require wick rejection confirmation", group = groupEntry)
+wickToBodyRatio        = input.float(1.2, "Wick to body ratio", minval = 0.1, step = 0.1, group = groupEntry)
+useLiquiditySweep      = input.bool(false, "Require liquidity sweep", group = groupEntry)
+sweepLookback          = input.int(8, "Sweep lookback", minval = 2, group = groupEntry)
+useFvgFilter           = input.bool(false, "Require recent FVG", group = groupEntry)
+fvgLookbackBars        = input.int(12, "FVG lookback bars", minval = 1, group = groupEntry)
+
+stopMethod             = input.string("ATR", "Stop method", options = ["ATR", "Swing", "Structure", "Fixed Percent", "Signal Candle"], group = groupRisk)
+stopAtrMult            = input.float(1.8, "ATR stop multiplier", minval = 0.2, step = 0.1, group = groupRisk)
+structureStopLookback  = input.int(10, "Structure stop lookback", minval = 2, group = groupRisk)
+fixedStopPct           = input.float(0.75, "Fixed stop (%)", minval = 0.05, step = 0.05, group = groupRisk)
+stopBufferTicks        = input.int(2, "Stop buffer ticks", minval = 0, group = groupRisk)
+minStopAtrFraction     = input.float(0.35, "Minimum stop ATR fraction", minval = 0.05, step = 0.05, group = groupRisk)
+minStopTicks           = input.int(5, "Minimum stop ticks", minval = 1, group = groupRisk)
+tpMethod               = input.string("R Multiple", "Target method", options = ["R Multiple", "ATR Extension", "Structure"], group = groupRisk)
+tp1R                   = input.float(1.0, "TP1 R", minval = 0.2, step = 0.1, group = groupRisk, inline = "rr")
+tp2R                   = input.float(2.0, "TP2 R", minval = 0.5, step = 0.1, group = groupRisk, inline = "rr")
+tp3R                   = input.float(3.0, "TP3 R", minval = 1.0, step = 0.1, group = groupRisk, inline = "rr")
+tp1AtrExt              = input.float(1.0, "TP1 ATR", minval = 0.2, step = 0.1, group = groupRisk, inline = "atrtp")
+tp2AtrExt              = input.float(2.0, "TP2 ATR", minval = 0.2, step = 0.1, group = groupRisk, inline = "atrtp")
+tp3AtrExt              = input.float(3.2, "TP3 ATR", minval = 0.2, step = 0.1, group = groupRisk, inline = "atrtp")
+tpStructureLookback    = input.int(40, "Structure target lookback", minval = 5, group = groupRisk)
+tp1ExitPctInput        = input.float(40.0, "TP1 exit %", minval = 1.0, maxval = 100.0, step = 1.0, group = groupRisk, inline = "alloc")
+tp2ExitPctInput        = input.float(35.0, "TP2 exit %", minval = 1.0, maxval = 100.0, step = 1.0, group = groupRisk, inline = "alloc")
+tp3ExitPctInput        = input.float(25.0, "TP3 exit %", minval = 1.0, maxval = 100.0, step = 1.0, group = groupRisk, inline = "alloc")
+
+moveStopTrigger        = input.string("After TP1", "Stop management trigger", options = ["None", "After TP1", "After TP2"], group = groupMgmt)
+breakevenMode          = input.string("Entry", "Breakeven mode", options = ["Entry", "Entry + Buffer"], group = groupMgmt)
+breakevenBufferAtr     = input.float(0.10, "Breakeven buffer (ATR)", minval = 0.0, step = 0.05, group = groupMgmt)
+trailMethod            = input.string("ATR", "Trail method", options = ["None", "ATR", "EMA", "Swing"], group = groupMgmt)
+trailAtrMult           = input.float(1.2, "ATR trail multiplier", minval = 0.2, step = 0.1, group = groupMgmt)
+trailEmaLen            = input.int(21, "EMA trail length", minval = 2, group = groupMgmt)
+trailSwingLookback     = input.int(7, "Swing trail lookback", minval = 2, group = groupMgmt)
+forceExitOnOpposite    = input.bool(true, "Force exit on opposite signal", group = groupMgmt)
+useTimeExit            = input.bool(false, "Use time-based exit", group = groupMgmt, inline = "time")
+timeExitBars           = input.int(40, "Bars", minval = 1, group = groupMgmt, inline = "time")
+maxConsecutiveLosses   = input.int(3, "Max consecutive losses", minval = 0, group = groupMgmt)
+maxDailyLossR          = input.float(3.0, "Max daily loss (R)", minval = 0.0, step = 0.5, group = groupMgmt)
+reentryCooldownBars    = input.int(5, "Cooldown bars after stop-out", minval = 0, group = groupMgmt)
+
+minBodyPct             = input.float(55.0, "Minimum body % of range", minval = 1.0, maxval = 100.0, step = 1.0, group = groupFilters)
+closeLocationThreshold = input.float(0.65, "Close location threshold", minval = 0.5, maxval = 1.0, step = 0.05, group = groupFilters)
+maxEntryRangeAtr       = input.float(1.8, "Max signal candle range (ATR)", minval = 0.3, step = 0.1, group = groupFilters)
+maxDistanceFromEmaAtr  = input.float(1.2, "Max distance from fast EMA (ATR)", minval = 0.1, step = 0.1, group = groupFilters)
+useCompressionFilter   = input.bool(true, "Avoid swing compression", group = groupFilters)
+compressionAtrMult     = input.float(1.2, "Min swing range in ATR", minval = 0.2, step = 0.1, group = groupFilters)
+
+showTrendMAs           = input.bool(true, "Show trend EMAs", group = groupVisuals)
+showSwingPoints        = input.bool(false, "Show swing points", group = groupVisuals)
+showTradeMap           = input.bool(true, "Show execution map", group = groupVisuals)
+showHistoricalLevels   = input.bool(true, "Show historical trade levels", group = groupVisuals)
+historicalTradesToShow = input.int(30, "Historical trade maps", minval = 1, maxval = 100, group = groupVisuals)
+showTradeLabels        = input.bool(true, "Show entry / SL / TP labels", group = groupVisuals)
+showRiskBox            = input.bool(true, "Show risk / reward box", group = groupVisuals)
+showRLabels            = input.bool(true, "Show R-multiple labels", group = groupVisuals)
+showTrailingPlot       = input.bool(true, "Show dynamic stop plot", group = groupVisuals)
+showDashboard          = input.bool(true, "Show dashboard", group = groupVisuals)
+
+//------------------------------------------------------------------------------
+// Helper functions
+//------------------------------------------------------------------------------
+f_round_to_tick(_price) =>
+    math.round(_price / syminfo.mintick) * syminfo.mintick
+
+f_body_pct(_open, _high, _low, _close) =>
+    _range = math.max(_high - _low, syminfo.mintick)
+    math.abs(_close - _open) / _range * 100.0
+
+f_close_location_long(_high, _low, _close) =>
+    _range = math.max(_high - _low, syminfo.mintick)
+    (_close - _low) / _range
+
+f_close_location_short(_high, _low, _close) =>
+    _range = math.max(_high - _low, syminfo.mintick)
+    (_high - _close) / _range
+
+f_lower_wick(_open, _high, _low, _close) =>
+    math.min(_open, _close) - _low
+
+f_upper_wick(_open, _high, _low, _close) =>
+    _high - math.max(_open, _close)
+
+f_bullish_engulfing() =>
+    close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+
+f_bearish_engulfing() =>
+    close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+
+f_long_stop(_method, _entry, _atr, _signalLow, _lastSwingLow, _bufferTicks, _fixedStopPct, _stopAtrMult, _structureLookback) =>
+    _buffer = syminfo.mintick * _bufferTicks
+    _structureLow = ta.lowest(low, _structureLookback)
+    _raw = switch _method
+        "ATR"           => _entry - _atr * _stopAtrMult
+        "Swing"         => nz(_lastSwingLow, _signalLow) - _buffer
+        "Structure"     => _structureLow - _buffer
+        "Fixed Percent" => _entry * (1.0 - _fixedStopPct / 100.0)
+        => _signalLow - _buffer
+    f_round_to_tick(_raw)
+
+f_short_stop(_method, _entry, _atr, _signalHigh, _lastSwingHigh, _bufferTicks, _fixedStopPct, _stopAtrMult, _structureLookback) =>
+    _buffer = syminfo.mintick * _bufferTicks
+    _structureHigh = ta.highest(high, _structureLookback)
+    _raw = switch _method
+        "ATR"           => _entry + _atr * _stopAtrMult
+        "Swing"         => nz(_lastSwingHigh, _signalHigh) + _buffer
+        "Structure"     => _structureHigh + _buffer
+        "Fixed Percent" => _entry * (1.0 + _fixedStopPct / 100.0)
+        => _signalHigh + _buffer
+    f_round_to_tick(_raw)
+
+f_long_targets(_method, _entry, _risk, _atr, _rr1, _rr2, _rr3, _atr1, _atr2, _atr3, _lookback) =>
+    _range1 = ta.highest(high, _lookback)
+    _range2 = ta.highest(high, math.max(_lookback * 2, _lookback + 1))
+    float _t1 = na
+    float _t2 = na
+    float _t3 = na
+    if _method == "R Multiple"
+        _t1 := _entry + _risk * _rr1
+        _t2 := _entry + _risk * _rr2
+        _t3 := _entry + _risk * _rr3
+    else if _method == "ATR Extension"
+        _t1 := _entry + _atr * _atr1
+        _t2 := _entry + _atr * _atr2
+        _t3 := _entry + _atr * _atr3
+    else
+        _t1 := _range1 > _entry ? _range1 : _entry + _risk * _rr1
+        _t2 := _range2 > _t1 ? _range2 : _entry + _risk * _rr2
+        _t3 := math.max(_entry + _risk * _rr3, _t2 + _risk)
+    [f_round_to_tick(_t1), f_round_to_tick(_t2), f_round_to_tick(_t3)]
+
+f_short_targets(_method, _entry, _risk, _atr, _rr1, _rr2, _rr3, _atr1, _atr2, _atr3, _lookback) =>
+    _range1 = ta.lowest(low, _lookback)
+    _range2 = ta.lowest(low, math.max(_lookback * 2, _lookback + 1))
+    float _t1 = na
+    float _t2 = na
+    float _t3 = na
+    if _method == "R Multiple"
+        _t1 := _entry - _risk * _rr1
+        _t2 := _entry - _risk * _rr2
+        _t3 := _entry - _risk * _rr3
+    else if _method == "ATR Extension"
+        _t1 := _entry - _atr * _atr1
+        _t2 := _entry - _atr * _atr2
+        _t3 := _entry - _atr * _atr3
+    else
+        _t1 := _range1 < _entry ? _range1 : _entry - _risk * _rr1
+        _t2 := _range2 < _t1 ? _range2 : _entry - _risk * _rr2
+        _t3 := math.min(_entry - _risk * _rr3, _t2 - _risk)
+    [f_round_to_tick(_t1), f_round_to_tick(_t2), f_round_to_tick(_t3)]
+
+f_register_trade_line(array<line> _lines, line _line, int _maxLines) =>
+    array.push(_lines, _line)
+    if array.size(_lines) > _maxLines
+        line _oldest = array.shift(_lines)
+        line.delete(_oldest)
+
+f_register_trade_label(array<label> _labels, label _label, int _maxLabels) =>
+    array.push(_labels, _label)
+    if array.size(_labels) > _maxLabels
+        label _oldest = array.shift(_labels)
+        label.delete(_oldest)
+
+f_register_trade_box(array<box> _boxes, box _box, int _maxBoxes) =>
+    array.push(_boxes, _box)
+    if array.size(_boxes) > _maxBoxes
+        box _oldest = array.shift(_boxes)
+        box.delete(_oldest)
+
+f_signed_r_text(_r) =>
+    (_r > 0 ? "+" : "") + str.tostring(_r, "#.##") + "R"
+
+//------------------------------------------------------------------------------
+// Core calculations
+//------------------------------------------------------------------------------
+execNow         = allowIntrabarProcessing or barstate.isconfirmed
+atrValue        = ta.atr(atrLen)
+fastEma         = ta.ema(close, fastEmaLen)
+slowEma         = ta.ema(close, slowEmaLen)
+trailEma        = ta.ema(close, trailEmaLen)
+[diPlus, diMinus, adxValue] = ta.dmi(adxLen, adxLen)
+rsiValue        = ta.rsi(close, rsiLen)
+[macdLine, macdSignal, macdHist] = ta.macd(close, macdFastLen, macdSlowLen, macdSignalLen)
+vwapValue       = ta.vwap(hlc3)
+pointValue      = syminfo.pointvalue > 0 ? syminfo.pointvalue : 1.0
+
+htfFastEma      = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, fastEmaLen)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+htfSlowEma      = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, slowEmaLen)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+htfClose        = request.security(syminfo.tickerid, htfTimeframe, close[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
+inSession       = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+newSession      = useSessionFilter and inSession and not inSession[1]
+var int sessionStartBar = na
+if newSession
+    sessionStartBar := bar_index
+if not inSession
+    sessionStartBar := na
+
+barsToSkip      = timeframe.isintraday ? int(math.ceil(noTradeFirstMinutes / math.max(timeframe.in_seconds() / 60.0, 1.0))) : 0
+barsSinceOpen   = inSession and not na(sessionStartBar) ? bar_index - sessionStartBar : 100000
+sessionOk       = not useSessionFilter or (inSession and barsSinceOpen >= barsToSkip)
+
+volumeBaseline  = ta.sma(volume, volumeLen)
+volumeOk        = not useVolumeFilter or (not na(volumeBaseline) and volume > volumeBaseline * volumeMultiplier)
+atrPctOfPrice   = close != 0 ? atrValue / close * 100.0 : 0.0
+atrRegimeOk     = not useAtrRegimeFilter or atrPctOfPrice >= minAtrPctOfPrice
+adxOk           = not useAdxFilter or adxValue >= adxThreshold
+vwapLongOk      = not useVwapFilter or na(vwapValue) or close >= vwapValue
+vwapShortOk     = not useVwapFilter or na(vwapValue) or close <= vwapValue
+
+ph              = ta.pivothigh(high, pivotLen, pivotLen)
+pl              = ta.pivotlow(low, pivotLen, pivotLen)
+var float lastSwingHigh = na
+var float priorSwingHigh = na
+var float lastSwingLow = na
+var float priorSwingLow = na
+var int lastSwingHighBar = na
+var int lastSwingLowBar = na
+
+if not na(ph)
+    priorSwingHigh := lastSwingHigh
+    lastSwingHigh := ph
+    lastSwingHighBar := bar_index - pivotLen
+
+if not na(pl)
+    priorSwingLow := lastSwingLow
+    lastSwingLow := pl
+    lastSwingLowBar := bar_index - pivotLen
+
+bullBos         = not na(lastSwingHigh) and close > lastSwingHigh and close[1] <= lastSwingHigh
+bearBos         = not na(lastSwingLow) and close < lastSwingLow and close[1] >= lastSwingLow
+hlStructure     = not na(lastSwingLow) and not na(priorSwingLow) and lastSwingLow > priorSwingLow
+lhStructure     = not na(lastSwingHigh) and not na(priorSwingHigh) and lastSwingHigh < priorSwingHigh
+bullStructureOk = not useStructureFilter or bullBos or hlStructure
+bearStructureOk = not useStructureFilter or bearBos or lhStructure
+
+bullSweep       = not na(lastSwingLow) and low < lastSwingLow and close > lastSwingLow and close > open
+bearSweep       = not na(lastSwingHigh) and high > lastSwingHigh and close < lastSwingHigh and close < open
+bullFvg         = bar_index > 2 and low > high[2]
+bearFvg         = bar_index > 2 and high < low[2]
+recentBullFvg   = ta.barssince(bullFvg) <= fvgLookbackBars
+recentBearFvg   = ta.barssince(bearFvg) <= fvgLookbackBars
+
+bodyPct         = f_body_pct(open, high, low, close)
+candleRange     = high - low
+lowerWick       = f_lower_wick(open, high, low, close)
+upperWick       = f_upper_wick(open, high, low, close)
+closeLocLong    = f_close_location_long(high, low, close)
+closeLocShort   = f_close_location_short(high, low, close)
+
+bullCandleBase  = close > open and bodyPct >= minBodyPct and closeLocLong >= closeLocationThreshold
+bearCandleBase  = close < open and bodyPct >= minBodyPct and closeLocShort >= closeLocationThreshold
+bullEngulfing   = f_bullish_engulfing()
+bearEngulfing   = f_bearish_engulfing()
+bullWickReject  = lowerWick > math.abs(close - open) * wickToBodyRatio and close > open and closeLocLong >= 0.55
+bearWickReject  = upperWick > math.abs(close - open) * wickToBodyRatio and close < open and closeLocShort >= 0.55
+candleLongOk    = bullCandleBase and (not useEngulfingFilter or bullEngulfing) and (not useWickRejectFilter or bullWickReject)
+candleShortOk   = bearCandleBase and (not useEngulfingFilter or bearEngulfing) and (not useWickRejectFilter or bearWickReject)
+
+rsiLongOk       = not useRsiFilter or rsiValue >= rsiLongThreshold
+rsiShortOk      = not useRsiFilter or rsiValue <= rsiShortThreshold
+macdLongOk      = not useMacdFilter or (macdLine > macdSignal and macdHist >= 0)
+macdShortOk     = not useMacdFilter or (macdLine < macdSignal and macdHist <= 0)
+momentumLongOk  = rsiLongOk and macdLongOk
+momentumShortOk = rsiShortOk and macdShortOk
+
+trendBull       = fastEma > slowEma and close > slowEma and ta.rising(slowEma, regimeSlopeLen)
+trendBear       = fastEma < slowEma and close < slowEma and ta.falling(slowEma, regimeSlopeLen)
+htfBull         = not useHTFConfirm or (htfFastEma > htfSlowEma and htfClose > htfSlowEma)
+htfBear         = not useHTFConfirm or (htfFastEma < htfSlowEma and htfClose < htfSlowEma)
+regimeBull      = trendBull and htfBull and adxOk and atrRegimeOk and sessionOk and volumeOk and vwapLongOk
+regimeBear      = trendBear and htfBear and adxOk and atrRegimeOk and sessionOk and volumeOk and vwapShortOk
+
+distanceFromFast = math.abs(close - fastEma)
+distanceOk       = distanceFromFast <= atrValue * maxDistanceFromEmaAtr
+rangeOk          = candleRange <= atrValue * maxEntryRangeAtr
+swingCompression = not na(lastSwingHigh) and not na(lastSwingLow) ? math.abs(lastSwingHigh - lastSwingLow) < atrValue * compressionAtrMult : false
+compressionOk    = not useCompressionFilter or not swingCompression
+qualityBaseOk    = distanceOk and rangeOk and compressionOk
+
+breakoutHigh     = ta.highest(high, breakoutLookback)[1]
+breakoutLow      = ta.lowest(low, breakoutLookback)[1]
+breakoutLong     = close > breakoutHigh and close > fastEma and candleLongOk
+breakoutShort    = close < breakoutLow and close < fastEma and candleShortOk
+
+pullbackLong     = low <= fastEma + atrValue * pullbackAtrTolerance and close > fastEma and close > high[1] and candleLongOk
+pullbackShort    = high >= fastEma - atrValue * pullbackAtrTolerance and close < fastEma and close < low[1] and candleShortOk
+
+reversalLong     = close > fastEma and ta.lowest(low, reversalLookback) == low and (bullSweep or bullEngulfing or bullWickReject) and candleLongOk
+reversalShort    = close < fastEma and ta.highest(high, reversalLookback) == high and (bearSweep or bearEngulfing or bearWickReject) and candleShortOk
+
+modeLongSignal   = switch entryMode
+    "Breakout"          => breakoutLong
+    "Pullback"          => pullbackLong
+    "Reversal-to-Trend" => reversalLong
+    => breakoutLong or pullbackLong or reversalLong
+
+modeShortSignal  = switch entryMode
+    "Breakout"          => breakoutShort
+    "Pullback"          => pullbackShort
+    "Reversal-to-Trend" => reversalShort
+    => breakoutShort or pullbackShort or reversalShort
+
+longEntryReason  = breakoutLong ? "Breakout" : pullbackLong ? "Pullback" : "Reversal"
+shortEntryReason = breakoutShort ? "Breakout" : pullbackShort ? "Pullback" : "Reversal"
+
+extraLongOk      = (not useLiquiditySweep or bullSweep) and (not useFvgFilter or recentBullFvg)
+extraShortOk     = (not useLiquiditySweep or bearSweep) and (not useFvgFilter or recentBearFvg)
+
+rawLongSignal    = enableLongs and regimeBull and modeLongSignal and momentumLongOk and bullStructureOk and extraLongOk and qualityBaseOk
+rawShortSignal   = enableShorts and regimeBear and modeShortSignal and momentumShortOk and bearStructureOk and extraShortOk and qualityBaseOk
+
+//------------------------------------------------------------------------------
+// Trade state
+//------------------------------------------------------------------------------
+tpAllocTotal     = tp1ExitPctInput + tp2ExitPctInput + tp3ExitPctInput
+tp1QtyPct        = tpAllocTotal > 0 ? tp1ExitPctInput / tpAllocTotal * 100.0 : 33.34
+tp2QtyPct        = tpAllocTotal > 0 ? tp2ExitPctInput / tpAllocTotal * 100.0 : 33.33
+tp3QtyPct        = math.max(0.0, 100.0 - tp1QtyPct - tp2QtyPct)
+
+var bool tradeActive           = false
+var int tradeDirection         = 0
+var int tradeEntryBar          = na
+var float tradeEntryPrice      = na
+var float tradeInitialStop     = na
+var float tradeActiveStop      = na
+var float tradeTp1             = na
+var float tradeTp2             = na
+var float tradeTp3             = na
+var float tradeInitialRisk     = na
+var float tradeQty             = na
+var float highestSinceEntry    = na
+var float lowestSinceEntry     = na
+var float remainingPositionPct = 0.0
+var bool tp1Hit                = false
+var bool tp2Hit                = false
+var bool tp3Hit                = false
+var bool stopManaged           = false
+var string activeEntryReason   = ""
+var string closeReason         = ""
+var float closePriceTracked    = na
+var int cooldownBarsLeft       = 0
+var int consecutiveLosses      = 0
+var float dailyLossR           = 0.0
+var float totalClosedR         = 0.0
+var float lastClosedRValue     = na
+var int trackedTrades          = 0
+var int trackedLongTrades      = 0
+var int trackedShortTrades     = 0
+var int lastClosedDirection    = 0
+var array<line> historicalTradeLines = array.new_line()
+var array<label> historicalTradeLabels = array.new_label()
+var array<box> historicalTradeBoxes = array.new_box()
+var line activeEntryLine       = na
+var line activeStopLine        = na
+var line activeTp1Line         = na
+var line activeTp2Line         = na
+var line activeTp3Line         = na
+var label activeEntryLabel     = na
+var label activeStopLabel      = na
+var label activeTp1Label       = na
+var label activeTp2Label       = na
+var label activeTp3Label       = na
+var box activeRiskBox          = na
+var box activeRewardBox        = na
+
+float longSetupStop            = na
+float longSetupTp1             = na
+float longSetupTp2             = na
+float longSetupTp3             = na
+float longSetupQty             = na
+bool longSetupValid            = false
+
+float shortSetupStop           = na
+float shortSetupTp1            = na
+float shortSetupTp2            = na
+float shortSetupTp3            = na
+float shortSetupQty            = na
+bool shortSetupValid           = false
+
+newDay = ta.change(time("D")) != 0
+if newDay
+    dailyLossR := 0.0
+
+if cooldownBarsLeft > 0 and barstate.isnew
+    cooldownBarsLeft -= 1
+
+lossGuardActive = (maxConsecutiveLosses > 0 and consecutiveLosses >= maxConsecutiveLosses) or (maxDailyLossR > 0 and dailyLossR >= maxDailyLossR)
+maxHistoricalLines = math.min(historicalTradesToShow * 5, 450)
+maxHistoricalLabels = math.min(historicalTradesToShow * 10, 450)
+maxHistoricalBoxes = math.min(historicalTradesToShow * 2, 90)
+
+//------------------------------------------------------------------------------
+// Entries
+//------------------------------------------------------------------------------
+canOpenNewTrade = execNow and not tradeActive and cooldownBarsLeft == 0 and not lossGuardActive
+canOpenNewTrade := canOpenNewTrade and strategy.position_size == 0
+
+plannedLongEntry  = rawLongSignal and canOpenNewTrade
+plannedShortEntry = rawShortSignal and canOpenNewTrade
+
+if plannedLongEntry
+    candidateEntry = close
+    candidateStop = f_long_stop(stopMethod, candidateEntry, atrValue, low, lastSwingLow, stopBufferTicks, fixedStopPct, stopAtrMult, structureStopLookback)
+    candidateRisk = candidateEntry - candidateStop
+    minStopDistance = math.max(atrValue * minStopAtrFraction, syminfo.mintick * minStopTicks)
+    validStop = candidateStop < candidateEntry and candidateRisk >= minStopDistance
+    longSetupValid := validStop
+    longSetupStop := candidateStop
+    if validStop
+        [candidateTp1, candidateTp2, candidateTp3] = f_long_targets(tpMethod, candidateEntry, candidateRisk, atrValue, tp1R, tp2R, tp3R, tp1AtrExt, tp2AtrExt, tp3AtrExt, tpStructureLookback)
+        riskCash = modelAccountSize * riskPerTradePct / 100.0
+        candidateQty = math.min(maxOrderQty, math.max(minOrderQty, riskCash / math.max(candidateRisk * pointValue, syminfo.mintick)))
+        longSetupTp1 := candidateTp1
+        longSetupTp2 := candidateTp2
+        longSetupTp3 := candidateTp3
+        longSetupQty := candidateQty
+        tradeActive := true
+        tradeDirection := 1
+        tradeEntryBar := bar_index
+        tradeEntryPrice := f_round_to_tick(candidateEntry)
+        tradeInitialStop := candidateStop
+        tradeActiveStop := candidateStop
+        tradeTp1 := candidateTp1
+        tradeTp2 := candidateTp2
+        tradeTp3 := candidateTp3
+        tradeInitialRisk := candidateRisk
+        tradeQty := candidateQty
+        highestSinceEntry := high
+        lowestSinceEntry := low
+        remainingPositionPct := 100.0
+        tp1Hit := false
+        tp2Hit := false
+        tp3Hit := false
+        stopManaged := false
+        activeEntryReason := longEntryReason
+        closeReason := ""
+        closePriceTracked := na
+        trackedLongTrades += 1
+        strategy.entry("Long", strategy.long, qty = candidateQty, comment = activeEntryReason)
+        if showTradeMap and showHistoricalLevels
+            activeEntryLine := line.new(bar_index, tradeEntryPrice, bar_index, tradeEntryPrice, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.aqua, 0), width = 2)
+            activeStopLine := line.new(bar_index, tradeInitialStop, bar_index, tradeInitialStop, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.red, 0), width = 2, style = line.style_dashed)
+            activeTp1Line := line.new(bar_index, tradeTp1, bar_index, tradeTp1, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.lime, 0), width = 1, style = line.style_dashed)
+            activeTp2Line := line.new(bar_index, tradeTp2, bar_index, tradeTp2, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.green, 0), width = 1, style = line.style_dashed)
+            activeTp3Line := line.new(bar_index, tradeTp3, bar_index, tradeTp3, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.blue, 0), width = 2)
+            f_register_trade_line(historicalTradeLines, activeEntryLine, maxHistoricalLines)
+            f_register_trade_line(historicalTradeLines, activeStopLine, maxHistoricalLines)
+            f_register_trade_line(historicalTradeLines, activeTp1Line, maxHistoricalLines)
+            f_register_trade_line(historicalTradeLines, activeTp2Line, maxHistoricalLines)
+            f_register_trade_line(historicalTradeLines, activeTp3Line, maxHistoricalLines)
+        if showTradeMap and showRiskBox
+            activeRiskBox := box.new(left = bar_index, top = math.max(tradeEntryPrice, tradeInitialStop), right = bar_index, bottom = math.min(tradeEntryPrice, tradeInitialStop), border_color = color.new(color.red, 55), bgcolor = color.new(color.red, 88))
+            activeRewardBox := box.new(left = bar_index, top = math.max(tradeEntryPrice, tradeTp3), right = bar_index, bottom = math.min(tradeEntryPrice, tradeTp3), border_color = color.new(color.green, 55), bgcolor = color.new(color.green, 90))
+            f_register_trade_box(historicalTradeBoxes, activeRiskBox, maxHistoricalBoxes)
+            f_register_trade_box(historicalTradeBoxes, activeRewardBox, maxHistoricalBoxes)
+        if showTradeMap and showTradeLabels
+            activeEntryLabel := label.new(bar_index, tradeEntryPrice, "LE\n" + activeEntryReason, style = label.style_label_up, color = color.new(color.green, 0), textcolor = color.white, size = size.small)
+            activeStopLabel := label.new(bar_index, tradeInitialStop, "SL" + (showRLabels ? "\n-1.00R" : ""), style = label.style_label_left, color = color.new(color.red, 0), textcolor = color.white, size = size.small)
+            activeTp1Label := label.new(bar_index, tradeTp1, "TP1" + (showRLabels ? "\n" + f_signed_r_text(tp1R) : ""), style = label.style_label_left, color = color.new(color.lime, 0), textcolor = color.black, size = size.small)
+            activeTp2Label := label.new(bar_index, tradeTp2, "TP2" + (showRLabels ? "\n" + f_signed_r_text(tp2R) : ""), style = label.style_label_left, color = color.new(color.green, 0), textcolor = color.white, size = size.small)
+            activeTp3Label := label.new(bar_index, tradeTp3, "TP3" + (showRLabels ? "\n" + f_signed_r_text(tp3R) : ""), style = label.style_label_left, color = color.new(color.blue, 0), textcolor = color.white, size = size.small)
+            f_register_trade_label(historicalTradeLabels, activeEntryLabel, maxHistoricalLabels)
+            f_register_trade_label(historicalTradeLabels, activeStopLabel, maxHistoricalLabels)
+            f_register_trade_label(historicalTradeLabels, activeTp1Label, maxHistoricalLabels)
+            f_register_trade_label(historicalTradeLabels, activeTp2Label, maxHistoricalLabels)
+            f_register_trade_label(historicalTradeLabels, activeTp3Label, maxHistoricalLabels)
+
+if plannedShortEntry
+    candidateEntry = close
+    candidateStop = f_short_stop(stopMethod, candidateEntry, atrValue, high, lastSwingHigh, stopBufferTicks, fixedStopPct, stopAtrMult, structureStopLookback)
+    candidateRisk = candidateStop - candidateEntry
+    minStopDistance = math.max(atrValue * minStopAtrFraction, syminfo.mintick * minStopTicks)
+    validStop = candidateStop > candidateEntry and candidateRisk >= minStopDistance
+    shortSetupValid := validStop
+    shortSetupStop := candidateStop
+    if validStop
+        [candidateTp1, candidateTp2, candidateTp3] = f_short_targets(tpMethod, candidateEntry, candidateRisk, atrValue, tp1R, tp2R, tp3R, tp1AtrExt, tp2AtrExt, tp3AtrExt, tpStructureLookback)
+        riskCash = modelAccountSize * riskPerTradePct / 100.0
+        candidateQty = math.min(maxOrderQty, math.max(minOrderQty, riskCash / math.max(candidateRisk * pointValue, syminfo.mintick)))
+        shortSetupTp1 := candidateTp1
+        shortSetupTp2 := candidateTp2
+        shortSetupTp3 := candidateTp3
+        shortSetupQty := candidateQty
+        tradeActive := true
+        tradeDirection := -1
+        tradeEntryBar := bar_index
+        tradeEntryPrice := f_round_to_tick(candidateEntry)
+        tradeInitialStop := candidateStop
+        tradeActiveStop := candidateStop
+        tradeTp1 := candidateTp1
+        tradeTp2 := candidateTp2
+        tradeTp3 := candidateTp3
+        tradeInitialRisk := candidateRisk
+        tradeQty := candidateQty
+        highestSinceEntry := high
+        lowestSinceEntry := low
+        remainingPositionPct := 100.0
+        tp1Hit := false
+        tp2Hit := false
+        tp3Hit := false
+        stopManaged := false
+        activeEntryReason := shortEntryReason
+        closeReason := ""
+        closePriceTracked := na
+        trackedShortTrades += 1
+        strategy.entry("Short", strategy.short, qty = candidateQty, comment = activeEntryReason)
+        if showTradeMap and showHistoricalLevels
+            activeEntryLine := line.new(bar_index, tradeEntryPrice, bar_index, tradeEntryPrice, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.aqua, 0), width = 2)
+            activeStopLine := line.new(bar_index, tradeInitialStop, bar_index, tradeInitialStop, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.red, 0), width = 2, style = line.style_dashed)
+            activeTp1Line := line.new(bar_index, tradeTp1, bar_index, tradeTp1, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.lime, 0), width = 1, style = line.style_dashed)
+            activeTp2Line := line.new(bar_index, tradeTp2, bar_index, tradeTp2, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.green, 0), width = 1, style = line.style_dashed)
+            activeTp3Line := line.new(bar_index, tradeTp3, bar_index, tradeTp3, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.blue, 0), width = 2)
+            f_register_trade_line(historicalTradeLines, activeEntryLine, maxHistoricalLines)
+            f_register_trade_line(historicalTradeLines, activeStopLine, maxHistoricalLines)
+            f_register_trade_line(historicalTradeLines, activeTp1Line, maxHistoricalLines)
+            f_register_trade_line(historicalTradeLines, activeTp2Line, maxHistoricalLines)
+            f_register_trade_line(historicalTradeLines, activeTp3Line, maxHistoricalLines)
+        if showTradeMap and showRiskBox
+            activeRiskBox := box.new(left = bar_index, top = math.max(tradeEntryPrice, tradeInitialStop), right = bar_index, bottom = math.min(tradeEntryPrice, tradeInitialStop), border_color = color.new(color.red, 55), bgcolor = color.new(color.red, 88))
+            activeRewardBox := box.new(left = bar_index, top = math.max(tradeEntryPrice, tradeTp3), right = bar_index, bottom = math.min(tradeEntryPrice, tradeTp3), border_color = color.new(color.green, 55), bgcolor = color.new(color.green, 90))
+            f_register_trade_box(historicalTradeBoxes, activeRiskBox, maxHistoricalBoxes)
+            f_register_trade_box(historicalTradeBoxes, activeRewardBox, maxHistoricalBoxes)
+        if showTradeMap and showTradeLabels
+            activeEntryLabel := label.new(bar_index, tradeEntryPrice, "SE\n" + activeEntryReason, style = label.style_label_down, color = color.new(color.red, 0), textcolor = color.white, size = size.small)
+            activeStopLabel := label.new(bar_index, tradeInitialStop, "SL" + (showRLabels ? "\n-1.00R" : ""), style = label.style_label_left, color = color.new(color.red, 0), textcolor = color.white, size = size.small)
+            activeTp1Label := label.new(bar_index, tradeTp1, "TP1" + (showRLabels ? "\n" + f_signed_r_text(tp1R) : ""), style = label.style_label_left, color = color.new(color.lime, 0), textcolor = color.black, size = size.small)
+            activeTp2Label := label.new(bar_index, tradeTp2, "TP2" + (showRLabels ? "\n" + f_signed_r_text(tp2R) : ""), style = label.style_label_left, color = color.new(color.green, 0), textcolor = color.white, size = size.small)
+            activeTp3Label := label.new(bar_index, tradeTp3, "TP3" + (showRLabels ? "\n" + f_signed_r_text(tp3R) : ""), style = label.style_label_left, color = color.new(color.blue, 0), textcolor = color.white, size = size.small)
+            f_register_trade_label(historicalTradeLabels, activeEntryLabel, maxHistoricalLabels)
+            f_register_trade_label(historicalTradeLabels, activeStopLabel, maxHistoricalLabels)
+            f_register_trade_label(historicalTradeLabels, activeTp1Label, maxHistoricalLabels)
+            f_register_trade_label(historicalTradeLabels, activeTp2Label, maxHistoricalLabels)
+            f_register_trade_label(historicalTradeLabels, activeTp3Label, maxHistoricalLabels)
+
+//------------------------------------------------------------------------------
+// Dynamic stop management
+//------------------------------------------------------------------------------
+if tradeActive
+    highestSinceEntry := na(highestSinceEntry) ? high : math.max(highestSinceEntry, high)
+    lowestSinceEntry := na(lowestSinceEntry) ? low : math.min(lowestSinceEntry, low)
+    if showTradeMap and showHistoricalLevels
+        if not na(activeEntryLine)
+            line.set_x2(activeEntryLine, bar_index)
+        if not na(activeStopLine)
+            line.set_x2(activeStopLine, bar_index)
+            line.set_y2(activeStopLine, tradeActiveStop)
+        if not na(activeTp1Line)
+            line.set_x2(activeTp1Line, bar_index)
+        if not na(activeTp2Line)
+            line.set_x2(activeTp2Line, bar_index)
+        if not na(activeTp3Line)
+            line.set_x2(activeTp3Line, bar_index)
+    if showTradeMap and showRiskBox
+        if not na(activeRiskBox)
+            box.set_right(activeRiskBox, bar_index)
+            box.set_top(activeRiskBox, math.max(tradeEntryPrice, tradeActiveStop))
+            box.set_bottom(activeRiskBox, math.min(tradeEntryPrice, tradeActiveStop))
+        if not na(activeRewardBox)
+            box.set_right(activeRewardBox, bar_index)
+            box.set_top(activeRewardBox, math.max(tradeEntryPrice, tradeTp3))
+            box.set_bottom(activeRewardBox, math.min(tradeEntryPrice, tradeTp3))
+    if showTradeMap and showTradeLabels
+        if not na(activeEntryLabel)
+            label.set_x(activeEntryLabel, bar_index)
+            label.set_y(activeEntryLabel, tradeEntryPrice)
+        if not na(activeStopLabel)
+            label.set_x(activeStopLabel, bar_index)
+            label.set_y(activeStopLabel, tradeActiveStop)
+        if not na(activeTp1Label)
+            label.set_x(activeTp1Label, bar_index)
+            label.set_y(activeTp1Label, tradeTp1)
+        if not na(activeTp2Label)
+            label.set_x(activeTp2Label, bar_index)
+            label.set_y(activeTp2Label, tradeTp2)
+        if not na(activeTp3Label)
+            label.set_x(activeTp3Label, bar_index)
+            label.set_y(activeTp3Label, tradeTp3)
+
+    trailTriggerHit = moveStopTrigger == "After TP1" ? tp1Hit : moveStopTrigger == "After TP2" ? tp2Hit : false
+    beBuffer = atrValue * breakevenBufferAtr
+    breakevenStop = tradeDirection == 1 ? tradeEntryPrice + (breakevenMode == "Entry + Buffer" ? beBuffer : 0.0) : tradeEntryPrice - (breakevenMode == "Entry + Buffer" ? beBuffer : 0.0)
+    atrTrailStop = tradeDirection == 1 ? highestSinceEntry - atrValue * trailAtrMult : lowestSinceEntry + atrValue * trailAtrMult
+    emaTrailStop = tradeDirection == 1 ? trailEma - syminfo.mintick * stopBufferTicks : trailEma + syminfo.mintick * stopBufferTicks
+    swingTrailStop = tradeDirection == 1 ? ta.lowest(low, trailSwingLookback) - syminfo.mintick * stopBufferTicks : ta.highest(high, trailSwingLookback) + syminfo.mintick * stopBufferTicks
+    chosenTrailStop = switch trailMethod
+        "ATR"   => atrTrailStop
+        "EMA"   => emaTrailStop
+        "Swing" => swingTrailStop
+        => na
+
+    if trailTriggerHit
+        stopManaged := true
+        if tradeDirection == 1
+            tradeActiveStop := math.max(tradeInitialStop, breakevenStop)
+            if trailMethod != "None" and not na(chosenTrailStop)
+                tradeActiveStop := math.max(tradeActiveStop, chosenTrailStop)
+        else
+            tradeActiveStop := math.min(tradeInitialStop, breakevenStop)
+            if trailMethod != "None" and not na(chosenTrailStop)
+                tradeActiveStop := math.min(tradeActiveStop, chosenTrailStop)
+        tradeActiveStop := f_round_to_tick(tradeActiveStop)
+        if showTradeMap and showHistoricalLevels and not na(activeStopLine)
+            line.set_y2(activeStopLine, tradeActiveStop)
+
+//------------------------------------------------------------------------------
+// Orders and manual exits
+//------------------------------------------------------------------------------
+tradeOrdersActive = tradeActive and (allowIntrabarProcessing or (not na(tradeEntryBar) and bar_index > tradeEntryBar))
+
+if tradeOrdersActive and tradeDirection == 1
+    strategy.exit("Long TP1", "Long", stop = tradeActiveStop, limit = tradeTp1, qty_percent = tp1QtyPct, comment = "TP1")
+    strategy.exit("Long TP2", "Long", stop = tradeActiveStop, limit = tradeTp2, qty_percent = tp2QtyPct, comment = "TP2")
+    strategy.exit("Long TP3", "Long", stop = tradeActiveStop, limit = tradeTp3, qty_percent = 100, comment = "TP3")
+
+if tradeOrdersActive and tradeDirection == -1
+    strategy.exit("Short TP1", "Short", stop = tradeActiveStop, limit = tradeTp1, qty_percent = tp1QtyPct, comment = "TP1")
+    strategy.exit("Short TP2", "Short", stop = tradeActiveStop, limit = tradeTp2, qty_percent = tp2QtyPct, comment = "TP2")
+    strategy.exit("Short TP3", "Short", stop = tradeActiveStop, limit = tradeTp3, qty_percent = 100, comment = "TP3")
+
+oppositeSignalExit = tradeActive and forceExitOnOpposite and execNow and ((tradeDirection == 1 and rawShortSignal) or (tradeDirection == -1 and rawLongSignal))
+timeExitTriggered  = tradeActive and useTimeExit and execNow and not na(tradeEntryBar) and bar_index - tradeEntryBar >= timeExitBars
+
+if oppositeSignalExit
+    closeReason := "Opposite Signal"
+    closePriceTracked := close
+    if tradeDirection == 1
+        strategy.close("Long", comment = closeReason)
+    else
+        strategy.close("Short", comment = closeReason)
+
+if timeExitTriggered
+    closeReason := "Time Exit"
+    closePriceTracked := close
+    if tradeDirection == 1
+        strategy.close("Long", comment = closeReason)
+    else
+        strategy.close("Short", comment = closeReason)
+
+//------------------------------------------------------------------------------
+// State tracking for TP and final closure labels
+//------------------------------------------------------------------------------
+if tradeOrdersActive
+    longStopTouched  = tradeDirection == 1 and low <= tradeActiveStop
+    shortStopTouched = tradeDirection == -1 and high >= tradeActiveStop
+    tp1Touched       = tradeDirection == 1 ? high >= tradeTp1 : low <= tradeTp1
+    tp2Touched       = tradeDirection == 1 ? high >= tradeTp2 : low <= tradeTp2
+    tp3Touched       = tradeDirection == 1 ? high >= tradeTp3 : low <= tradeTp3
+
+    // Conservative sequencing on ambiguous bars: stop first, then targets.
+    if (longStopTouched or shortStopTouched) and closeReason == ""
+        closeReason := stopManaged ? (((tradeDirection == 1 and tradeActiveStop >= tradeEntryPrice) or (tradeDirection == -1 and tradeActiveStop <= tradeEntryPrice)) ? "BE" : "TRAIL") : "SL"
+        closePriceTracked := tradeActiveStop
+
+    if closeReason == ""
+        if not tp1Hit and tp1Touched
+            tp1Hit := true
+            remainingPositionPct -= tp1QtyPct
+        if tp1Hit and not tp2Hit and tp2Touched
+            tp2Hit := true
+            remainingPositionPct -= tp2QtyPct
+        if not tp3Hit and tp3Touched
+            tp3Hit := true
+            remainingPositionPct := 0.0
+            closeReason := "TP3"
+            closePriceTracked := tradeTp3
+
+closedCampaign = tradeActive and closeReason != ""
+
+if closedCampaign
+    finalStopLevel = closeReason == "SL" or closeReason == "BE" or closeReason == "TRAIL" ? nz(closePriceTracked, tradeActiveStop) : tradeActiveStop
+    if not na(activeEntryLine)
+        line.set_extend(activeEntryLine, extend.none)
+        line.set_x2(activeEntryLine, bar_index)
+    if not na(activeStopLine)
+        line.set_extend(activeStopLine, extend.none)
+        line.set_x2(activeStopLine, bar_index)
+        line.set_y2(activeStopLine, finalStopLevel)
+    if not na(activeTp1Line)
+        line.set_extend(activeTp1Line, extend.none)
+        line.set_x2(activeTp1Line, bar_index)
+    if not na(activeTp2Line)
+        line.set_extend(activeTp2Line, extend.none)
+        line.set_x2(activeTp2Line, bar_index)
+    if not na(activeTp3Line)
+        line.set_extend(activeTp3Line, extend.none)
+        line.set_x2(activeTp3Line, bar_index)
+    if not na(activeRiskBox)
+        box.set_right(activeRiskBox, bar_index)
+        box.set_top(activeRiskBox, math.max(tradeEntryPrice, finalStopLevel))
+        box.set_bottom(activeRiskBox, math.min(tradeEntryPrice, finalStopLevel))
+    if not na(activeRewardBox)
+        box.set_right(activeRewardBox, bar_index)
+    if not na(activeEntryLabel)
+        label.set_x(activeEntryLabel, bar_index)
+    if not na(activeStopLabel)
+        label.set_x(activeStopLabel, bar_index)
+        label.set_y(activeStopLabel, finalStopLevel)
+    if not na(activeTp1Label)
+        label.set_x(activeTp1Label, bar_index)
+    if not na(activeTp2Label)
+        label.set_x(activeTp2Label, bar_index)
+    if not na(activeTp3Label)
+        label.set_x(activeTp3Label, bar_index)
+
+    exitR = 0.0
+    lastClosedDirection := tradeDirection
+    tp1RRealized = tp1Hit ? tp1QtyPct / 100.0 * (tradeDirection == 1 ? (tradeTp1 - tradeEntryPrice) / tradeInitialRisk : (tradeEntryPrice - tradeTp1) / tradeInitialRisk) : 0.0
+    tp2RRealized = tp2Hit ? tp2QtyPct / 100.0 * (tradeDirection == 1 ? (tradeTp2 - tradeEntryPrice) / tradeInitialRisk : (tradeEntryPrice - tradeTp2) / tradeInitialRisk) : 0.0
+    remainingFrac = math.max(remainingPositionPct, 0.0) / 100.0
+    remainderR = remainingFrac * (tradeDirection == 1 ? (closePriceTracked - tradeEntryPrice) / tradeInitialRisk : (tradeEntryPrice - closePriceTracked) / tradeInitialRisk)
+    if closeReason == "TP3"
+        remainderR := tp3QtyPct / 100.0 * (tradeDirection == 1 ? (tradeTp3 - tradeEntryPrice) / tradeInitialRisk : (tradeEntryPrice - tradeTp3) / tradeInitialRisk)
+    exitR := tp1RRealized + tp2RRealized + remainderR
+    lastClosedRValue := exitR
+    totalClosedR += exitR
+    trackedTrades += 1
+    if exitR < 0
+        consecutiveLosses += 1
+        dailyLossR += math.abs(exitR)
+    else
+        consecutiveLosses := 0
+    if closeReason == "SL" or closeReason == "BE" or closeReason == "TRAIL"
+        cooldownBarsLeft := reentryCooldownBars
+
+    tradeActive := false
+    tradeDirection := 0
+    tradeEntryBar := na
+    tradeEntryPrice := na
+    tradeInitialStop := na
+    tradeActiveStop := na
+    tradeTp1 := na
+    tradeTp2 := na
+    tradeTp3 := na
+    tradeInitialRisk := na
+    tradeQty := na
+    highestSinceEntry := na
+    lowestSinceEntry := na
+    remainingPositionPct := 0.0
+    tp1Hit := false
+    tp2Hit := false
+    tp3Hit := false
+    stopManaged := false
+    activeEntryReason := ""
+    activeEntryLine := na
+    activeStopLine := na
+    activeTp1Line := na
+    activeTp2Line := na
+    activeTp3Line := na
+    activeEntryLabel := na
+    activeStopLabel := na
+    activeTp1Label := na
+    activeTp2Label := na
+    activeTp3Label := na
+    activeRiskBox := na
+    activeRewardBox := na
+
+//------------------------------------------------------------------------------
+// Visuals
+//------------------------------------------------------------------------------
+plot(showTrendMAs ? fastEma : na, "Fast EMA", color = color.new(color.teal, 0), linewidth = 2)
+plot(showTrendMAs ? slowEma : na, "Slow EMA", color = color.new(color.orange, 0), linewidth = 2)
+plot(showTrailingPlot and tradeActive ? tradeActiveStop : na, "Dynamic Stop", color = color.new(color.yellow, 0), linewidth = 2, style = plot.style_linebr)
+
+entryPlot = plot(showTradeMap and tradeActive ? tradeEntryPrice : na, "Entry", color = color.new(color.aqua, 0), linewidth = 2, style = plot.style_linebr)
+stopPlot  = plot(showTradeMap and tradeActive ? tradeActiveStop : na, "Stop", color = color.new(color.red, 0), linewidth = 2, style = plot.style_linebr)
+tp1Plot   = plot(showTradeMap and tradeActive ? tradeTp1 : na, "TP1", color = color.new(color.lime, 0), linewidth = 1, style = plot.style_linebr)
+tp2Plot   = plot(showTradeMap and tradeActive ? tradeTp2 : na, "TP2", color = color.new(color.green, 0), linewidth = 1, style = plot.style_linebr)
+tp3Plot   = plot(showTradeMap and tradeActive ? tradeTp3 : na, "TP3", color = color.new(color.blue, 0), linewidth = 2, style = plot.style_linebr)
+
+fill(entryPlot, stopPlot, color = showTradeMap ? color.new(color.red, 88) : na, title = "Risk Fill")
+fill(entryPlot, tp3Plot, color = showTradeMap ? color.new(color.green, 90) : na, title = "Reward Fill")
+
+plotshape(plannedLongEntry and longSetupValid, title = "Long Entry Arrow", style = shape.labelup, location = location.belowbar, color = color.new(color.green, 0), size = size.small, text = "LE", textcolor = color.white)
+plotshape(plannedShortEntry and shortSetupValid, title = "Short Entry Arrow", style = shape.labeldown, location = location.abovebar, color = color.new(color.red, 0), size = size.small, text = "SE", textcolor = color.white)
+
+plotshape(showSwingPoints and not na(ph), title = "Swing High", style = shape.circle, location = location.abovebar, color = color.new(color.orange, 0), size = size.tiny, offset = -pivotLen)
+plotshape(showSwingPoints and not na(pl), title = "Swing Low", style = shape.circle, location = location.belowbar, color = color.new(color.aqua, 0), size = size.tiny, offset = -pivotLen)
+
+if plannedLongEntry and longSetupValid and showTradeMap and not showTradeLabels
+    label.new(bar_index, low, "Long\n" + longEntryReason, style = label.style_label_up, color = color.new(color.lime, 0), textcolor = color.white, size = size.small)
+    if showRLabels
+        label.new(bar_index, longSetupTp1, "TP1\n" + str.tostring(tp1R, "#.##") + "R", style = label.style_label_left, color = color.new(color.green, 65), textcolor = color.white, size = size.tiny)
+        label.new(bar_index, longSetupTp2, "TP2\n" + str.tostring(tp2R, "#.##") + "R", style = label.style_label_left, color = color.new(color.green, 75), textcolor = color.white, size = size.tiny)
+        label.new(bar_index, longSetupTp3, "TP3\n" + str.tostring(tp3R, "#.##") + "R", style = label.style_label_left, color = color.new(color.blue, 75), textcolor = color.white, size = size.tiny)
+        label.new(bar_index, longSetupStop, "SL", style = label.style_label_left, color = color.new(color.red, 65), textcolor = color.white, size = size.tiny)
+
+if plannedShortEntry and shortSetupValid and showTradeMap and not showTradeLabels
+    label.new(bar_index, high, "Short\n" + shortEntryReason, style = label.style_label_down, color = color.new(color.red, 0), textcolor = color.white, size = size.small)
+    if showRLabels
+        label.new(bar_index, shortSetupTp1, "TP1\n" + str.tostring(tp1R, "#.##") + "R", style = label.style_label_left, color = color.new(color.green, 65), textcolor = color.white, size = size.tiny)
+        label.new(bar_index, shortSetupTp2, "TP2\n" + str.tostring(tp2R, "#.##") + "R", style = label.style_label_left, color = color.new(color.green, 75), textcolor = color.white, size = size.tiny)
+        label.new(bar_index, shortSetupTp3, "TP3\n" + str.tostring(tp3R, "#.##") + "R", style = label.style_label_left, color = color.new(color.blue, 75), textcolor = color.white, size = size.tiny)
+        label.new(bar_index, shortSetupStop, "SL", style = label.style_label_left, color = color.new(color.red, 65), textcolor = color.white, size = size.tiny)
+
+if tradeActive and not tp1Hit[1] and tp1Hit
+    if showTradeLabels
+        tp1HitLabel = label.new(bar_index, tradeTp1, (tradeDirection == 1 ? "LXTP1" : "SXTP1") + (showRLabels ? "\n" + f_signed_r_text(tp1R) : ""), style = tradeDirection == 1 ? label.style_label_down : label.style_label_up, color = color.new(color.olive, 0), textcolor = color.white, size = size.small)
+        f_register_trade_label(historicalTradeLabels, tp1HitLabel, maxHistoricalLabels)
+    else
+        label.new(bar_index, tradeTp1, "TP1", style = label.style_label_left, color = color.new(color.green, 0), textcolor = color.white, size = size.tiny)
+
+if tradeActive and not tp2Hit[1] and tp2Hit
+    if showTradeLabels
+        tp2HitLabel = label.new(bar_index, tradeTp2, (tradeDirection == 1 ? "LXTP2" : "SXTP2") + (showRLabels ? "\n" + f_signed_r_text(tp2R) : ""), style = tradeDirection == 1 ? label.style_label_down : label.style_label_up, color = color.new(color.olive, 0), textcolor = color.white, size = size.small)
+        f_register_trade_label(historicalTradeLabels, tp2HitLabel, maxHistoricalLabels)
+    else
+        label.new(bar_index, tradeTp2, "TP2", style = label.style_label_left, color = color.new(color.green, 0), textcolor = color.white, size = size.tiny)
+
+if closedCampaign
+    labelPrice = na(closePriceTracked) ? close : closePriceTracked
+    closeLabelColor = closeReason == "TP3" ? color.blue : ((closeReason == "Opposite Signal" or closeReason == "Time Exit") ? color.orange : color.red)
+    closeLabelText = closeReason == "TP3" ? (lastClosedDirection == 1 ? "LXTP3" : "SXTP3") : closeReason == "SL" ? (lastClosedDirection == 1 ? "LXSL" : "SXSL") : closeReason == "BE" ? (lastClosedDirection == 1 ? "LXBE" : "SXBE") : closeReason == "TRAIL" ? (lastClosedDirection == 1 ? "LXTRL" : "SXTRL") : closeReason
+    exitLabel = label.new(bar_index, labelPrice, closeLabelText + (showRLabels ? "\n" + f_signed_r_text(lastClosedRValue) : ""), style = lastClosedDirection == 1 ? label.style_label_down : label.style_label_up, color = color.new(closeLabelColor, 0), textcolor = color.white, size = size.small)
+    f_register_trade_label(historicalTradeLabels, exitLabel, maxHistoricalLabels)
+
+currentTradeR = tradeActive ? (tradeDirection == 1 ? (close - tradeEntryPrice) / tradeInitialRisk : (tradeEntryPrice - close) / tradeInitialRisk) : na
+
+//------------------------------------------------------------------------------
+// Dashboard
+//------------------------------------------------------------------------------
+winRate = strategy.closedtrades > 0 ? strategy.wintrades / strategy.closedtrades * 100.0 : na
+profitFactor = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : na
+avgTrackedR = trackedTrades > 0 ? totalClosedR / trackedTrades : na
+regimeText = regimeBull ? "Bullish" : regimeBear ? "Bearish" : "Neutral"
+
+var table dash = table.new(position.top_right, 2, 8, bgcolor = color.new(color.black, 10), frame_color = color.new(color.gray, 65), frame_width = 1)
+if showDashboard and barstate.islast
+    table.cell(dash, 0, 0, "Metric", text_color = color.white, bgcolor = color.new(color.gray, 75))
+    table.cell(dash, 1, 0, "Value", text_color = color.white, bgcolor = color.new(color.gray, 75))
+    table.cell(dash, 0, 1, "Win Rate")
+    table.cell(dash, 1, 1, na(winRate) ? "n/a" : str.tostring(winRate, "#.##") + "%")
+    table.cell(dash, 0, 2, "Profit Factor")
+    table.cell(dash, 1, 2, na(profitFactor) ? "n/a" : str.tostring(profitFactor, "#.##"))
+    table.cell(dash, 0, 3, "Avg R")
+    table.cell(dash, 1, 3, na(avgTrackedR) ? "n/a" : str.tostring(avgTrackedR, "#.##"))
+    table.cell(dash, 0, 4, "Trades")
+    table.cell(dash, 1, 4, str.tostring(strategy.closedtrades))
+    table.cell(dash, 0, 5, "Long / Short")
+    table.cell(dash, 1, 5, str.tostring(trackedLongTrades) + " / " + str.tostring(trackedShortTrades))
+    table.cell(dash, 0, 6, "Regime")
+    table.cell(dash, 1, 6, regimeText)
+    table.cell(dash, 0, 7, "Current R")
+    table.cell(dash, 1, 7, na(currentTradeR) ? "Flat" : str.tostring(currentTradeR, "#.##"))
+
+if not showDashboard and barstate.islast
+    table.clear(dash, 0, 0, 1, 7)

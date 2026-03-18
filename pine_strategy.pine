@@ -7,7 +7,7 @@
 VERSION                   = 'v1.2'// 2023.10.13
 strategy(
   'XXX',
-  shorttitle              = 'Bharath ' + VERSION,
+  shorttitle              = 'Bharath 70%' + VERSION,
   overlay                 = true,
   explicit_plot_zorder    = true,
   pyramiding              = 0,
