@@ -111,6 +111,7 @@ class CapitalTradingService:
         self._security_token = ""
         self._market_cache: Dict[str, Dict[str, Any]] = {}
         self._market_by_epic_cache: Dict[str, Dict[str, Any]] = {}
+        self._account_preferences_cache: Dict[str, Any] = {}
 
         self._apply_env_overrides()
 
@@ -190,6 +191,76 @@ class CapitalTradingService:
         if "metal_silver_spot" in normalized_keys:
             return 1000.0
         return quantity
+
+    def _opposite_action(self, action: str) -> str:
+        normalized = self._normalize_action(action)
+        if normalized == "BUY":
+            return "SELL"
+        if normalized == "SELL":
+            return "BUY"
+        return ""
+
+    def _hedging_mode_enabled(self) -> bool:
+        cached = self._account_preferences_cache
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if cached and now_ts < float(cached.get("expires_at", 0)):
+            return bool((cached.get("value") or {}).get("hedgingMode"))
+        preferences = self._request("GET", "/api/v1/accounts/preferences")
+        self._account_preferences_cache = {
+            "value": preferences,
+            "expires_at": now_ts + 30,
+        }
+        return bool((preferences or {}).get("hedgingMode"))
+
+    def _close_single_position(
+        self,
+        deal_id: str,
+        epic: str,
+        direction: str,
+        current_size: float,
+        quantity: float = 0.0,
+    ) -> dict[str, Any]:
+        full_close = quantity <= 0 or quantity >= current_size - 1e-9
+        if full_close:
+            result = self._request("DELETE", f"/api/v1/positions/{deal_id}")
+            return {
+                "ok": True,
+                "mode": "full",
+                "dealId": deal_id,
+                "closed_size": current_size,
+                "dealReference": result.get("dealReference"),
+            }
+
+        if self._hedging_mode_enabled():
+            return {
+                "ok": False,
+                "error": "partial_close_unsupported",
+                "message": "Partial close requires hedgingMode to be disabled on the Capital.com account.",
+            }
+
+        reduce_direction = self._opposite_action(direction)
+        if not reduce_direction:
+            return {"ok": False, "error": "invalid_action", "message": "Unable to determine close direction."}
+
+        payload = {
+            "epic": epic,
+            "direction": reduce_direction,
+            "size": float(quantity),
+            "guaranteedStop": False,
+        }
+        create = self._request("POST", "/api/v1/positions", payload=payload)
+        deal_reference = str(create.get("dealReference", "")).strip()
+        confirm = self._confirm_by_reference(deal_reference) if deal_reference else {}
+        return {
+            "ok": True,
+            "mode": "partial",
+            "dealId": deal_id,
+            "closed_size": float(quantity),
+            "remaining_size": max(current_size - float(quantity), 0.0),
+            "dealReference": deal_reference,
+            "confirm": confirm,
+            "sent": payload,
+        }
 
     def _must_have_credentials(self) -> None:
         if not self._api_key:
@@ -630,12 +701,14 @@ class CapitalTradingService:
         deal_id: str = "",
         instrument_key: str = "",
         identifier: str = "",
+        quantity: float = 0.0,
     ) -> dict[str, Any]:
         with self._lock:
             self._apply_runtime_credentials(identifier)
             side = self._normalize_action(side) if side else ""
             if side and side not in {"BUY", "SELL"}:
                 return {"ok": False, "error": "invalid_action", "message": "side must be BUY/SELL when provided."}
+            close_quantity = self._safe_float(quantity)
 
             resolved_epic = ""
             if epic or instrument_key:
@@ -646,12 +719,28 @@ class CapitalTradingService:
 
             if deal_id:
                 try:
-                    self._request("DELETE", f"/api/v1/positions/{str(deal_id).strip()}")
-                    return {"ok": True, "message": "Position close request sent.", "closed_deals": [str(deal_id).strip()]}
+                    details = self._request("GET", f"/api/v1/positions/{str(deal_id).strip()}")
+                    position = details.get("position", {}) or {}
+                    market = details.get("market", {}) or {}
+                    close_result = self._close_single_position(
+                        deal_id=str(deal_id).strip(),
+                        epic=str(market.get("epic", "")).strip(),
+                        direction=str(position.get("direction", "")).upper(),
+                        current_size=self._safe_float(position.get("size")),
+                        quantity=close_quantity,
+                    )
+                    if close_result.get("ok"):
+                        return {
+                            "ok": True,
+                            "message": "Position close request sent.",
+                            "closed_deals": [str(deal_id).strip()],
+                            "details": [close_result],
+                        }
+                    return close_result
                 except Exception as exc:
                     return {"ok": False, "error": "close_failed", "message": self._clean_message(str(exc))}
 
-            targets: List[str] = []
+            targets: List[dict[str, Any]] = []
             for row in self._positions():
                 position = row.get("position", {}) or {}
                 market = row.get("market", {}) or {}
@@ -660,19 +749,47 @@ class CapitalTradingService:
                 if resolved_epic and str(market.get("epic", "")).strip() != resolved_epic:
                     continue
                 if position.get("dealId"):
-                    targets.append(str(position["dealId"]))
+                    targets.append(
+                        {
+                            "dealId": str(position["dealId"]),
+                            "direction": str(position.get("direction", "")).upper(),
+                            "size": self._safe_float(position.get("size")),
+                            "epic": str(market.get("epic", "")).strip(),
+                        }
+                    )
 
             if not targets:
                 return {"ok": True, "message": "No matching open positions found.", "closed_deals": []}
 
             closed: List[str] = []
             errors: List[str] = []
+            details: List[dict[str, Any]] = []
+            remaining_to_close = close_quantity
             for target in targets:
+                size_to_close = 0.0
+                if close_quantity > 0:
+                    if remaining_to_close <= 0:
+                        break
+                    size_to_close = min(target["size"], remaining_to_close)
                 try:
-                    self._request("DELETE", f"/api/v1/positions/{target}")
-                    closed.append(target)
+                    close_result = self._close_single_position(
+                        deal_id=target["dealId"],
+                        epic=target["epic"],
+                        direction=target["direction"],
+                        current_size=target["size"],
+                        quantity=size_to_close,
+                    )
+                    if not close_result.get("ok"):
+                        errors.append(
+                            f"{target['dealId']}: {self._clean_message(str(close_result.get('message') or close_result.get('error') or 'close_failed'))}"
+                        )
+                        continue
+                    details.append(close_result)
+                    closed.append(target["dealId"])
+                    if close_quantity > 0:
+                        remaining_to_close = max(remaining_to_close - float(close_result.get("closed_size") or 0.0), 0.0)
                 except Exception as exc:
-                    errors.append(f"{target}: {self._clean_message(str(exc))}")
+                    errors.append(f"{target['dealId']}: {self._clean_message(str(exc))}")
 
             if errors and not closed:
                 return {"ok": False, "error": "close_failed", "message": "; ".join(errors), "closed_deals": []}
@@ -681,9 +798,10 @@ class CapitalTradingService:
                     "ok": True,
                     "message": "Some positions were closed, some failed.",
                     "closed_deals": closed,
+                    "details": details,
                     "errors": errors,
                 }
-            return {"ok": True, "message": "Position close request sent.", "closed_deals": closed}
+            return {"ok": True, "message": "Position close request sent.", "closed_deals": closed, "details": details}
 
     def close_opposites_then_open(
         self,
@@ -769,7 +887,7 @@ class CapitalTradingService:
         event = webhook.event
         action = webhook.action
         side = webhook.side
-        quantity = self._resolve_order_quantity(webhook)
+        requested_quantity = webhook.quantity if webhook.quantity > 0 else 0.0
         instrument_key = webhook.instrument or self._settings.default_instrument
         epic = webhook.epic
         deal_id = webhook.deal_id
@@ -784,6 +902,7 @@ class CapitalTradingService:
 
         open_events = {"entry", "open", "long", "short", "buy", "sell", "reversal", "reverse", "flip"}
         close_events = {"close", "exit"}
+        quantity = self._resolve_order_quantity(webhook) if event in open_events else requested_quantity
 
         log_event(
             self._logger,
@@ -838,6 +957,7 @@ class CapitalTradingService:
                 deal_id=deal_id,
                 instrument_key=instrument_key,
                 identifier=identifier,
+                quantity=quantity,
             )
         else:
             result = {"ok": False, "error": "invalid_payload", "message": f"Unknown event: {event}"}
