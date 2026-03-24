@@ -12,9 +12,10 @@ from shared.capital_service import CapitalTradingService
 from shared.config import get_settings
 from shared.helpers import (
     log_event,
-    mask_sensitive,
     milliseconds_between,
     safe_json_dumps,
+    summarize_payload,
+    summarize_result,
     utc_now_iso,
 )
 from shared.models import NormalizedWebhook, QueueEnvelope
@@ -147,7 +148,7 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
         strategy=webhook.strategy,
         bar_time=webhook.bar_time,
         comment=webhook.comment,
-        payload=mask_sensitive(webhook.raw),
+        payload_summary=summarize_payload(webhook.raw),
     )
     if SETTINGS.tradingview_webhook_secret and webhook.secret != SETTINGS.tradingview_webhook_secret:
         log_event(
@@ -195,7 +196,6 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
                 200,
             )
         QUEUE_PUBLISHER.enqueue(envelope)
-        STATE_STORE.mark_enqueued(dedupe_key)
     except Exception as exc:
         STATE_STORE.mark_enqueue_failed(dedupe_key, str(exc))
         log_event(
@@ -333,7 +333,7 @@ def trading_worker(msg: func.QueueMessage) -> None:
                 queue_latency_ms=queue_latency_ms,
                 execution_duration_ms=execution_duration_ms,
                 end_to_end_latency_ms=end_to_end_latency_ms,
-                result=mask_sensitive(result),
+                result_summary=summarize_result(result),
             )
             raise RuntimeError(safe_json_dumps(result))
 
@@ -371,7 +371,7 @@ def trading_worker(msg: func.QueueMessage) -> None:
             queue_latency_ms=queue_latency_ms,
             execution_duration_ms=execution_duration_ms,
             end_to_end_latency_ms=end_to_end_latency_ms,
-            result=mask_sensitive(result),
+            result_summary=summarize_result(result),
         )
 
     except Exception as exc:
@@ -412,5 +412,5 @@ def trading_worker_poison(msg: func.QueueMessage) -> None:
         dedupe_key=envelope.dedupe_key,
         previous_error=previous_error,
         poison_reason=poison_reason,
-        payload=mask_sensitive(envelope.payload.raw),
+        payload_summary=summarize_payload(envelope.payload.raw),
     )

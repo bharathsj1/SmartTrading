@@ -50,5 +50,79 @@ def mask_sensitive(value: Any) -> Any:
     return value
 
 
+def summarize_payload(value: Any) -> Any:
+    masked = mask_sensitive(value)
+    if not isinstance(masked, Mapping):
+        return masked
+    keys = (
+        "event",
+        "action",
+        "side",
+        "instrument",
+        "ticker",
+        "strategy",
+        "account",
+        "quantity",
+        "qty_percent",
+        "price",
+        "sl",
+        "tp1",
+        "tp2",
+        "tp3",
+        "reason",
+        "tf",
+        "bar_time",
+        "comment",
+        "deal_id",
+        "dealId",
+    )
+    return {key: masked[key] for key in keys if key in masked}
+
+
+def summarize_result(value: Any) -> Any:
+    masked = mask_sensitive(value)
+    if not isinstance(masked, Mapping):
+        return masked
+    summary: dict[str, Any] = {}
+    keys = (
+        "ok",
+        "error",
+        "message",
+        "mode",
+        "dealId",
+        "dealReference",
+        "closed_size",
+        "remaining_size",
+    )
+    for key in keys:
+        if key in masked:
+            summary[key] = masked[key]
+    details = masked.get("details")
+    if isinstance(details, list):
+        summary["details_count"] = len(details)
+    opened = masked.get("opened")
+    if isinstance(opened, Mapping):
+        summary["opened"] = {
+            key: opened.get(key)
+            for key in ("ok", "dealId", "dealReference", "message")
+            if key in opened
+        }
+    closed_opposites = masked.get("closed_opposites")
+    if isinstance(closed_opposites, list):
+        summary["closed_opposites_count"] = len(closed_opposites)
+    timing = masked.get("timing")
+    if isinstance(timing, Mapping):
+        summary["timing"] = {
+            key: timing.get(key)
+            for key in (
+                "queue_latency_ms",
+                "execution_duration_ms",
+                "end_to_end_latency_ms",
+            )
+            if key in timing
+        }
+    return summary
+
+
 def log_event(logger: logging.Logger, level: int, event: str, **fields: Any) -> None:
     logger.log(level, safe_json_dumps({"event": event, **fields}))

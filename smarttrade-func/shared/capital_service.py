@@ -13,7 +13,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from shared.config import Settings
-from shared.helpers import log_event, mask_sensitive
+from shared.helpers import log_event, mask_sensitive, summarize_payload, summarize_result
 from shared.models import NormalizedWebhook
 
 INSTRUMENT_ALIASES = {
@@ -931,7 +931,7 @@ class CapitalTradingService:
             instrument=instrument_key,
             quantity=quantity,
             quantity_percent=requested_quantity_percent,
-            payload=mask_sensitive(webhook.raw),
+            payload_summary=summarize_payload(webhook.raw),
         )
 
         if webhook.price is not None:
@@ -986,6 +986,6 @@ class CapitalTradingService:
             request_id=request_id,
             dedupe_key=dedupe_key,
             duration_ms=int((time.perf_counter() - started) * 1000),
-            result=mask_sensitive(result),
+            result_summary=summarize_result(result),
         )
         return result

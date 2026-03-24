@@ -1111,129 +1111,154 @@ sxMsgTP2Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP2', 'MA_CROSS', 't
 sxMsgTP3Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP3', 'MA_CROSS', 'trend', tp3QtyWebhook, 100, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP3
 sxMsgWebhook    = useWebhookJson ? f_close_json('short', 'SX'   , 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsg
 
+doLongEntry = strategy.position_size <= 0 and longE and barstate.isconfirmed
+doLongTP1   = strategy.position_size > 0 and longTP1 and barstate.isconfirmed
+doLongTP2   = strategy.position_size > 0 and longTP2 and barstate.isconfirmed
+doLongSL    = strategy.position_size > 0 and longSL and barstate.isconfirmed
+doLongExit  = strategy.position_size > 0 and longX and barstate.isconfirmed
+
+doShortEntry = strategy.position_size >= 0 and shortE and barstate.isconfirmed
+doShortTP1   = strategy.position_size < 0 and shortTP1 and barstate.isconfirmed
+doShortTP2   = strategy.position_size < 0 and shortTP2 and barstate.isconfirmed
+doShortSL    = strategy.position_size < 0 and shortSL and barstate.isconfirmed
+doShortExit  = strategy.position_size < 0 and shortX and barstate.isconfirmed
+
+var int   liveTradeDir   = 0
+var int   liveEntryBar   = na
+var float liveEntryPrice = na
+var float liveSlPrice    = na
+var float liveTp1Price   = na
+var float liveTp2Price   = na
+var float liveTp3Price   = na
+
+if doLongEntry or doShortEntry
+    liveTradeDir   := doLongEntry ? 1 : -1
+    liveEntryBar   := bar_index
+    liveEntryPrice := entryLine
+    liveSlPrice    := slLine
+    liveTp1Price   := tp1Line
+    liveTp2Price   := tp2Line
+    liveTp3Price   := tp3Line
+
+if doLongTP1 or doShortTP1
+    liveTp1Price := na
+
+if doLongTP2 or doShortTP2
+    liveTp2Price := na
+
+if doLongSL or doLongExit or doShortSL or doShortExit
+    liveTradeDir   := 0
+    liveEntryBar   := na
+    liveEntryPrice := na
+    liveSlPrice    := na
+    liveTp1Price   := na
+    liveTp2Price   := na
+    liveTp3Price   := na
 
 // ——————————— <strategy_calls> {
 //<long orders>
-if strategy.position_size <= 0 and longE and barstate.isconfirmed
+if doLongEntry
     strategy.entry(
       'Long',
       strategy.long,
       alert_message    = leWebhookMsg,
       comment          = 'LE')
-if strategy.position_size > 0 and longTP1 and barstate.isconfirmed
+if doLongTP1
     strategy.close(
       'Long',
       qty_percent      = tp1CloseQtyPct,
       alert_message    = lxMsgTP1Webhook,
       comment          = 'LXTP1')
-if strategy.position_size > 0 and longTP2 and barstate.isconfirmed
+if doLongTP2
     strategy.close(
       'Long',
       qty_percent      = tp2CloseQtyPct,
       alert_message    = lxMsgTP2Webhook,
       comment          = 'LXTP2')
-if strategy.position_size > 0 and longSL and barstate.isconfirmed
+if doLongSL
     strategy.close(
       'Long',
       alert_message    = lxMsgSLWebhook,
       comment          = 'SL')
-if strategy.position_size > 0 and longX and barstate.isconfirmed
+if doLongExit
     strategy.close(
       'Long',
       alert_message    = lxMsgWebhook,
       comment          = 'LX')
 //<short orders>
-if strategy.position_size >= 0 and shortE and barstate.isconfirmed
+if doShortEntry
     strategy.entry(
       'Short',
       strategy.short,
       alert_message    = seWebhookMsg,
       comment          = 'SE')
-if strategy.position_size < 0 and shortTP1 and barstate.isconfirmed
+if doShortTP1
     strategy.close(
       'Short',
       qty_percent      = tp1CloseQtyPct,
       alert_message    = sxMsgTP1Webhook,
       comment          = 'SXTP1')
-if strategy.position_size < 0 and shortTP2 and barstate.isconfirmed
+if doShortTP2
     strategy.close(
       'Short',
       qty_percent      = tp2CloseQtyPct,
       alert_message    = sxMsgTP2Webhook,
       comment          = 'SXTP2')
-if strategy.position_size < 0 and shortSL and barstate.isconfirmed
+if doShortSL
     strategy.close(
       'Short',
       alert_message    = sxMsgSLWebhook,
       comment          = 'SL')
-if strategy.position_size < 0 and shortX and barstate.isconfirmed
+if doShortExit
     strategy.close(
       'Short',
       alert_message    = sxMsgWebhook,
       comment          = 'SX')
 
 // ——————————— <visuals>
-c_tp         = leTrigger or seTrigger ? na :
-               condition == 0.0       ? na : color.green
-c_entry      = leTrigger or seTrigger ? na :
-               condition == 0.0       ? na : color.blue
-c_sl         = leTrigger or seTrigger ? na :
-               condition == 0.0       ? na : color.red
+c_tp         = liveTradeDir == 0 ? na : color.green
+c_entry      = liveTradeDir == 0 ? na : color.blue
+c_sl         = liveTradeDir == 0 ? na : color.red
 p_tp1Line    = plot (
-  condition ==  1.0 or
-  condition == -1.0 ? tp1Line : na,
+  liveTp1Price,
   title      = "TP Line 1",
   color      = c_tp,
   linewidth  = 1,
   style      = plot.style_linebr)
 p_tp2Line    = plot (
-  condition ==  1.0 or
-  condition == -1.0 or
-  condition ==  1.1 or
-  condition == -1.1 ? tp2Line : na,
+  liveTp2Price,
   title      = "TP Line 2",
   color      = c_tp,
   linewidth  = 1,
   style      = plot.style_linebr)
 p_tp3Line    = plot (
-  condition ==  1.0 or
-  condition == -1.0 or
-  condition ==  1.1 or
-  condition == -1.1 or
-  condition ==  1.2 or
-  condition == -1.2 ? tp3Line : na,
+  liveTp3Price,
   title      = "TP Line 3",
   color      = c_tp,
   linewidth  = 1,
   style      = plot.style_linebr)
 p_entryLine  = plot (
-  condition >=  1.0 or
-  condition <= -1.0 ? entryLine : na,
+  liveEntryPrice,
   title      = "Entry Line",
   color      = c_entry,
   linewidth  = 1,
   style      = plot.style_linebr)
 p_slLine     = plot (
-  condition ==  1.0 or
-  condition == -1.0 or
-  condition ==  1.1 or
-  condition == -1.1 or
-  condition ==  1.2 or
-  condition == -1.2 ? slLine : na,
+  liveSlPrice,
   title      = "SL Line",
   color      = c_sl,
   linewidth  = 1,
   style      = plot.style_linebr)
 fill(
   p_tp3Line, p_entryLine,
-  color      = leTrigger or seTrigger ? na : color.new(color.green, 90))
+  color      = liveTradeDir == 0 ? na : color.new(color.green, 90))
 fill(
   p_entryLine, p_slLine,
-  color      = leTrigger or seTrigger ? na : color.new(color.red, 90))
+  color      = liveTradeDir == 0 ? na : color.new(color.red, 90))
 
 //<alerts labels>
 plotshape(
-  i_alertOn and longE,
+  i_alertOn and doLongEntry,
   title      = 'Long',
   text       = 'Long',
   textcolor  = color.white,
@@ -1242,7 +1267,7 @@ plotshape(
   size       = size.tiny,
   location   = location.belowbar)
 plotshape(
-  i_alertOn and shortE,
+  i_alertOn and doShortEntry,
   title      = 'Short',
   text       = 'Short',
   textcolor  = color.white,
@@ -1251,7 +1276,7 @@ plotshape(
   size       = size.tiny,
   location   = location.abovebar)
 plotshape(
-  i_alertOn and (longX or shortX) ? close : na,
+  i_alertOn and (doLongExit or doShortExit) ? close : na,
   title      = 'Close',
   text       = 'Close',
   textcolor  = color.white,
@@ -1259,7 +1284,7 @@ plotshape(
   style      = shape.labelup,
   size       = size.tiny,
   location   = location.absolute)
-l_tp         = i_alertOn and (longTP1 or shortTP1) ? close : na
+l_tp         = i_alertOn and (doLongTP1 or doShortTP1) ? close : na
 plotshape(
   l_tp,
   title      = "TP1 Cross",
@@ -1270,7 +1295,7 @@ plotshape(
   size       = size.tiny,
   location   = location.absolute)
 plotshape(
-  i_alertOn and (longTP2 or shortTP2) ? close : na,
+  i_alertOn and (doLongTP2 or doShortTP2) ? close : na,
   title      = "TP2 Cross",
   text       = "TP2",
   textcolor  = color.white,
@@ -1279,16 +1304,7 @@ plotshape(
   size       = size.tiny,
   location   = location.absolute)
 plotshape(
-  i_alertOn and (longTP3 or shortTP3) ? close : na,
-  title      = "TP3 Cross",
-  text       = "TP3",
-  textcolor  = color.white,
-  color      = color.olive,
-  style      = shape.labelup,
-  size       = size.tiny,
-  location   = location.absolute)
-plotshape(
-  i_alertOn and (longSL or shortSL) ? close : na,
+  i_alertOn and (doLongSL or doShortSL) ? close : na,
   title      = "SL Cross",
   text       = "SL",
   textcolor  = color.white,
@@ -1317,120 +1333,137 @@ plot(
 // ——————————— <↑↑↑ G_RISK ↑↑↑>
 
 //#region ———— <↓↓↓ G_SCRIPT02 ↓↓↓> {
-// @function        Queues a new element in an array and de-queues its first element.
-f_qDq(_array, _val) =>
-    array.push(_array, _val)
-    _return = array.shift(_array)
-    _return
+var line  liveSlGuide     = na
+var line  liveEntryGuide  = na
+var line  liveTp3Guide    = na
+var line  liveTp2Guide    = na
+var line  liveTp1Guide    = na
+var label liveSlLabel     = na
+var label liveTp3Label    = na
+var label liveTp2Label    = na
+var label liveTp1Label    = na
+var label liveEntryLabel  = na
 
-var line[]  a_slLine     = array.new_line(1)
-var line[]  a_entryLine  = array.new_line(1)
-var line[]  a_tp3Line    = array.new_line(1)
-var line[]  a_tp2Line    = array.new_line(1)
-var line[]  a_tp1Line    = array.new_line(1)
-var label[] a_slLabel    = array.new_label(1)
-var label[] a_tp3label   = array.new_label(1)
-var label[] a_tp2label   = array.new_label(1)
-var label[] a_tp1label   = array.new_label(1)
-var label[] a_entryLabel = array.new_label(1)
+l_right = 10
 
-newEntry     = longE or shortE
-entryIndex   = 1
-entryIndex  := newEntry ? bar_index : nz(entryIndex[1])
-lasTrade     = bar_index >= entryIndex
-l_right      = 10
+if doLongEntry or doShortEntry
+    if not na(liveSlGuide)
+        line.delete(liveSlGuide)
+    if not na(liveEntryGuide)
+        line.delete(liveEntryGuide)
+    if not na(liveTp3Guide)
+        line.delete(liveTp3Guide)
+    if not na(liveTp2Guide)
+        line.delete(liveTp2Guide)
+    if not na(liveTp1Guide)
+        line.delete(liveTp1Guide)
+    if not na(liveSlLabel)
+        label.delete(liveSlLabel)
+    if not na(liveEntryLabel)
+        label.delete(liveEntryLabel)
+    if not na(liveTp3Label)
+        label.delete(liveTp3Label)
+    if not na(liveTp2Label)
+        label.delete(liveTp2Label)
+    if not na(liveTp1Label)
+        label.delete(liveTp1Label)
 
-line.delete(
-  f_qDq(a_slLine,
-  line.new(
-   entryIndex,
-   slLine,
-   last_bar_index + l_right,
-   slLine,
-   style = line.style_solid,
-   color = c_sl)))
-line.delete(
-  f_qDq(a_entryLine,
-  line.new(
-   entryIndex,
-   entryLine,
-   last_bar_index + l_right,
-   entryLine,
-   style = line.style_solid,
-   color = color.blue)))
-line.delete(
-  f_qDq(a_tp3Line,
-  line.new(
-   entryIndex,
-   tp3Line,
-   last_bar_index + l_right,
-   tp3Line,
-   style = line.style_solid,
-   color = c_tp)))
-line.delete(
-  f_qDq(a_tp2Line,
-  line.new(
-   entryIndex,
-   tp2Line,
-   last_bar_index + l_right,
-   tp2Line,
-   style = line.style_solid,
-   color = c_tp)))
-line.delete(
-  f_qDq(a_tp1Line,
-  line.new(
-   entryIndex,
-   tp1Line,
-   last_bar_index + l_right,
-   tp1Line,
-   style = line.style_solid,
-   color = c_tp)))
+    liveSlGuide    := line.new(liveEntryBar, liveSlPrice,    last_bar_index + l_right, liveSlPrice,    style = line.style_solid, color = c_sl)
+    liveEntryGuide := line.new(liveEntryBar, liveEntryPrice, last_bar_index + l_right, liveEntryPrice, style = line.style_solid, color = color.blue)
+    liveTp3Guide   := line.new(liveEntryBar, liveTp3Price,   last_bar_index + l_right, liveTp3Price,   style = line.style_solid, color = c_tp)
+    liveTp2Guide   := line.new(liveEntryBar, liveTp2Price,   last_bar_index + l_right, liveTp2Price,   style = line.style_solid, color = c_tp)
+    liveTp1Guide   := line.new(liveEntryBar, liveTp1Price,   last_bar_index + l_right, liveTp1Price,   style = line.style_solid, color = c_tp)
 
-label.delete(
-  f_qDq(a_slLabel,
-  label.new(
-   last_bar_index + l_right,
-   slLine,
-   'SL: ' + str.tostring(slLine, '##.###'),
-   style = label.style_label_left,
-   textcolor  = color.white,
-   color = c_sl)))
-label.delete(
-  f_qDq(a_entryLabel,
-  label.new(
-   last_bar_index + l_right,
-   entryLine,
-   'Entry: ' + str.tostring(entryLine, '##.###'),
-   style = label.style_label_left,
-   textcolor  = color.white,
-   color = color.blue)))
-label.delete(
-  f_qDq(a_tp3label,
-  label.new(
-   last_bar_index + l_right,
-   tp3Line,
-   'TP3: ' + str.tostring(tp3Line, '##.###'),
-   style = label.style_label_left,
-   textcolor  = color.white,
-   color = c_tp)))
-label.delete(
-  f_qDq(a_tp2label,
-  label.new(
-   last_bar_index + l_right,
-   tp2Line,
-   'TP2: ' + str.tostring(tp2Line, '##.###'),
-   style = label.style_label_left,
-   textcolor  = color.white,
-   color = c_tp)))
-label.delete(
-  f_qDq(a_tp1label,
-  label.new(
-   last_bar_index + l_right,
-   tp1Line,
-   'TP1: ' + str.tostring(tp1Line, '##.###'),
-   style = label.style_label_left,
-   textcolor  = color.white,
-   color = c_tp)))
+    liveSlLabel    := label.new(last_bar_index + l_right, liveSlPrice,    'SL: ' + str.tostring(liveSlPrice, '##.###'),       style = label.style_label_left, textcolor = color.white, color = c_sl)
+    liveEntryLabel := label.new(last_bar_index + l_right, liveEntryPrice, 'Entry: ' + str.tostring(liveEntryPrice, '##.###'), style = label.style_label_left, textcolor = color.white, color = color.blue)
+    liveTp3Label   := label.new(last_bar_index + l_right, liveTp3Price,   'TP3: ' + str.tostring(liveTp3Price, '##.###'),     style = label.style_label_left, textcolor = color.white, color = c_tp)
+    liveTp2Label   := label.new(last_bar_index + l_right, liveTp2Price,   'TP2: ' + str.tostring(liveTp2Price, '##.###'),     style = label.style_label_left, textcolor = color.white, color = c_tp)
+    liveTp1Label   := label.new(last_bar_index + l_right, liveTp1Price,   'TP1: ' + str.tostring(liveTp1Price, '##.###'),     style = label.style_label_left, textcolor = color.white, color = c_tp)
+
+if liveTradeDir != 0 and not na(liveEntryBar)
+    if not na(liveSlGuide)
+        line.set_xy1(liveSlGuide, liveEntryBar, liveSlPrice)
+        line.set_xy2(liveSlGuide, last_bar_index + l_right, liveSlPrice)
+    if not na(liveEntryGuide)
+        line.set_xy1(liveEntryGuide, liveEntryBar, liveEntryPrice)
+        line.set_xy2(liveEntryGuide, last_bar_index + l_right, liveEntryPrice)
+    if not na(liveTp3Guide) and not na(liveTp3Price)
+        line.set_xy1(liveTp3Guide, liveEntryBar, liveTp3Price)
+        line.set_xy2(liveTp3Guide, last_bar_index + l_right, liveTp3Price)
+    if not na(liveTp2Guide) and not na(liveTp2Price)
+        line.set_xy1(liveTp2Guide, liveEntryBar, liveTp2Price)
+        line.set_xy2(liveTp2Guide, last_bar_index + l_right, liveTp2Price)
+    if not na(liveTp1Guide) and not na(liveTp1Price)
+        line.set_xy1(liveTp1Guide, liveEntryBar, liveTp1Price)
+        line.set_xy2(liveTp1Guide, last_bar_index + l_right, liveTp1Price)
+    if not na(liveSlLabel)
+        label.set_x(liveSlLabel, last_bar_index + l_right)
+        label.set_y(liveSlLabel, liveSlPrice)
+        label.set_text(liveSlLabel, 'SL: ' + str.tostring(liveSlPrice, '##.###'))
+    if not na(liveEntryLabel)
+        label.set_x(liveEntryLabel, last_bar_index + l_right)
+        label.set_y(liveEntryLabel, liveEntryPrice)
+        label.set_text(liveEntryLabel, 'Entry: ' + str.tostring(liveEntryPrice, '##.###'))
+    if not na(liveTp3Label) and not na(liveTp3Price)
+        label.set_x(liveTp3Label, last_bar_index + l_right)
+        label.set_y(liveTp3Label, liveTp3Price)
+        label.set_text(liveTp3Label, 'TP3: ' + str.tostring(liveTp3Price, '##.###'))
+    if not na(liveTp2Label) and not na(liveTp2Price)
+        label.set_x(liveTp2Label, last_bar_index + l_right)
+        label.set_y(liveTp2Label, liveTp2Price)
+        label.set_text(liveTp2Label, 'TP2: ' + str.tostring(liveTp2Price, '##.###'))
+    if not na(liveTp1Label) and not na(liveTp1Price)
+        label.set_x(liveTp1Label, last_bar_index + l_right)
+        label.set_y(liveTp1Label, liveTp1Price)
+        label.set_text(liveTp1Label, 'TP1: ' + str.tostring(liveTp1Price, '##.###'))
+
+if doLongTP1 or doShortTP1
+    if not na(liveTp1Guide)
+        line.delete(liveTp1Guide)
+        liveTp1Guide := na
+    if not na(liveTp1Label)
+        label.delete(liveTp1Label)
+        liveTp1Label := na
+
+if doLongTP2 or doShortTP2
+    if not na(liveTp2Guide)
+        line.delete(liveTp2Guide)
+        liveTp2Guide := na
+    if not na(liveTp2Label)
+        label.delete(liveTp2Label)
+        liveTp2Label := na
+
+if doLongSL or doLongExit or doShortSL or doShortExit
+    if not na(liveSlGuide)
+        line.delete(liveSlGuide)
+        liveSlGuide := na
+    if not na(liveEntryGuide)
+        line.delete(liveEntryGuide)
+        liveEntryGuide := na
+    if not na(liveTp3Guide)
+        line.delete(liveTp3Guide)
+        liveTp3Guide := na
+    if not na(liveTp2Guide)
+        line.delete(liveTp2Guide)
+        liveTp2Guide := na
+    if not na(liveTp1Guide)
+        line.delete(liveTp1Guide)
+        liveTp1Guide := na
+    if not na(liveSlLabel)
+        label.delete(liveSlLabel)
+        liveSlLabel := na
+    if not na(liveEntryLabel)
+        label.delete(liveEntryLabel)
+        liveEntryLabel := na
+    if not na(liveTp3Label)
+        label.delete(liveTp3Label)
+        liveTp3Label := na
+    if not na(liveTp2Label)
+        label.delete(liveTp2Label)
+        liveTp2Label := na
+    if not na(liveTp1Label)
+        label.delete(liveTp1Label)
+        liveTp1Label := na
 
 //#endregion }
 // ——————————— <↑↑↑ G_SCRIPT02 ↑↑↑>
