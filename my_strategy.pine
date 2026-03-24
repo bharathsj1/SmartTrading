@@ -4,7 +4,7 @@
 
 
 //@version=5
-VERSION                   = 'v1.5'// 2026.03.19
+VERSION                   = 'v1.6'// 2026.03.24
 strategy(
   'XXX',
   shorttitle              = 'Bharath ' + VERSION,
@@ -850,11 +850,11 @@ i_lxQtyTP1   = input.float      (50,        'Qty   TP1'                     , gr
      tooltip =                   T_QTY)
 i_lxLvlTP2   = input.float      (1.5,       'Level TP2'                     , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP2   = input.float      (30,        'Qty   TP2'                     , group = G_RISK,
+i_lxQtyTP2   = input.float      (25,        'Qty   TP2'                     , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlTP3   = input.float      (2,         'Level TP3'                     , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP3   = input.float      (20,        'Runner Qty'                    , group = G_RISK,
+i_lxQtyTP3   = input.float      (25,        'Runner Qty'                    , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlSL    = input.float      (0.5,       'Stop Loss'                     , group = G_RISK,
      tooltip =                   T_LVL)
@@ -925,7 +925,7 @@ f_side_norm(_side) =>
         _result := 'sell'
     _result
 
-f_event_json(_event, _side, _reason, _setup, _regime, _qty, _price, _sl, _tp1, _tp2, _tp3) =>
+f_event_json(_event, _side, _reason, _setup, _regime, _qty, _qtyPercent, _price, _sl, _tp1, _tp2, _tp3) =>
     _json = "{"
     _json := _json + '"secret":' + f_json_str(tvSecret) + ","
     _json := _json + '"event":' + f_json_str(_event) + ","
@@ -936,6 +936,7 @@ f_event_json(_event, _side, _reason, _setup, _regime, _qty, _price, _sl, _tp1, _
     _json := _json + '"strategy":' + f_json_str(strategyTag) + ","
     _json := _json + '"account":' + f_json_str(accountTag) + ","
     _json := _json + '"quantity":' + f_json_num(_qty) + ","
+    _json := _json + '"qty_percent":' + f_json_num(_qtyPercent) + ","
     _json := _json + '"price":' + f_json_num(_price) + ","
     _json := _json + '"sl":' + f_json_num(_sl) + ","
     _json := _json + '"tp1":' + f_json_num(_tp1) + ","
@@ -951,13 +952,13 @@ f_event_json(_event, _side, _reason, _setup, _regime, _qty, _price, _sl, _tp1, _
     _json
 
 f_entry_json(_side, _reason, _setup, _regime, _sl, _tp1, _tp2, _tp3) =>
-    f_event_json('entry', _side, _reason, _setup, _regime, orderQty, close, _sl, _tp1, _tp2, _tp3)
+    f_event_json('entry', _side, _reason, _setup, _regime, orderQty, 100, close, _sl, _tp1, _tp2, _tp3)
 
-f_exit_json(_side, _reason, _setup, _regime, _qty, _sl, _tp1, _tp2, _tp3) =>
-    f_event_json('exit', _side, _reason, _setup, _regime, _qty, close, _sl, _tp1, _tp2, _tp3)
+f_exit_json(_side, _reason, _setup, _regime, _qty, _qtyPercent, _sl, _tp1, _tp2, _tp3) =>
+    f_event_json('exit', _side, _reason, _setup, _regime, _qty, _qtyPercent, close, _sl, _tp1, _tp2, _tp3)
 
 f_close_json(_side, _reason, _setup, _regime, _sl, _tp1, _tp2, _tp3) =>
-    f_event_json('close', _side, _reason, _setup, _regime, orderQty, close, _sl, _tp1, _tp2, _tp3)
+    f_event_json('close', _side, _reason, _setup, _regime, orderQty, 100, close, _sl, _tp1, _tp2, _tp3)
 
 
 G_DISPLAY    = 'Display'
@@ -1059,7 +1060,7 @@ volatilityOK = atrFast > atrSlow * 0.9
 
 tpQtyTotal = i_lxQtyTP1 + i_lxQtyTP2 + i_lxQtyTP3
 tp1OriginalQtyPct = tpQtyTotal > 0 ? i_lxQtyTP1 / tpQtyTotal * 100.0 : 50.0
-tp2OriginalQtyPct = tpQtyTotal > 0 ? i_lxQtyTP2 / tpQtyTotal * 100.0 : 30.0
+tp2OriginalQtyPct = tpQtyTotal > 0 ? i_lxQtyTP2 / tpQtyTotal * 100.0 : 25.0
 tp3OriginalQtyPct = math.max(0.0, 100.0 - tp1OriginalQtyPct - tp2OriginalQtyPct)
 tp1CloseQtyPct = tp1OriginalQtyPct
 remainingAfterTp1Pct = math.max(0.0, 100.0 - tp1CloseQtyPct)
@@ -1098,16 +1099,16 @@ shortTp3Webhook = useAtrTargets ? entryLine - atrTarget * tp3AtrMult : entryLine
 leWebhookMsg    = useWebhookJson ? f_entry_json('long' , 'LE'   , 'MA_CROSS', 'trend', longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_leMsg
 seWebhookMsg    = useWebhookJson ? f_entry_json('short', 'SE'   , 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_seMsg
 
-lxMsgSLWebhook  = useWebhookJson ? f_exit_json ('long' , 'SL'   , 'MA_CROSS', 'trend', orderQty, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgSL
-lxMsgTP1Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP1', 'MA_CROSS', 'trend', tp1QtyWebhook, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP1
-lxMsgTP2Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP2', 'MA_CROSS', 'trend', tp2QtyWebhook, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP2
-lxMsgTP3Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP3', 'MA_CROSS', 'trend', tp3QtyWebhook, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP3
+lxMsgSLWebhook  = useWebhookJson ? f_exit_json ('long' , 'SL'   , 'MA_CROSS', 'trend', orderQty, 100, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgSL
+lxMsgTP1Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP1', 'MA_CROSS', 'trend', tp1QtyWebhook, tp1CloseQtyPct, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP1
+lxMsgTP2Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP2', 'MA_CROSS', 'trend', tp2QtyWebhook, tp2CloseQtyPct, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP2
+lxMsgTP3Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP3', 'MA_CROSS', 'trend', tp3QtyWebhook, 100, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP3
 lxMsgWebhook    = useWebhookJson ? f_close_json('long' , 'LX'   , 'MA_CROSS', 'trend', longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsg
 
-sxMsgSLWebhook  = useWebhookJson ? f_exit_json ('short', 'SL'   , 'MA_CROSS', 'trend', orderQty, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgSL
-sxMsgTP1Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP1', 'MA_CROSS', 'trend', tp1QtyWebhook, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP1
-sxMsgTP2Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP2', 'MA_CROSS', 'trend', tp2QtyWebhook, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP2
-sxMsgTP3Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP3', 'MA_CROSS', 'trend', tp3QtyWebhook, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP3
+sxMsgSLWebhook  = useWebhookJson ? f_exit_json ('short', 'SL'   , 'MA_CROSS', 'trend', orderQty, 100, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgSL
+sxMsgTP1Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP1', 'MA_CROSS', 'trend', tp1QtyWebhook, tp1CloseQtyPct, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP1
+sxMsgTP2Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP2', 'MA_CROSS', 'trend', tp2QtyWebhook, tp2CloseQtyPct, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP2
+sxMsgTP3Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP3', 'MA_CROSS', 'trend', tp3QtyWebhook, 100, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP3
 sxMsgWebhook    = useWebhookJson ? f_close_json('short', 'SX'   , 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsg
 
 

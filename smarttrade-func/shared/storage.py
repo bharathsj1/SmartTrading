@@ -14,6 +14,7 @@ from shared.helpers import log_event, truncate_text, utc_now_iso
 from shared.models import QueueEnvelope
 
 STATE_PARTITION_KEY = "tradingview"
+ACTIVE_TRADE_PARTITION_KEY = "active_trade"
 
 
 def ensure_runtime_infrastructure(settings: Settings, logger: Optional[logging.Logger] = None) -> None:
@@ -112,6 +113,25 @@ class TradingStateStore:
 
     def _base_entity(self, dedupe_key: str) -> dict[str, Any]:
         return {"PartitionKey": STATE_PARTITION_KEY, "RowKey": dedupe_key}
+
+    def _active_trade_entity(self, trade_key: str) -> dict[str, Any]:
+        return {"PartitionKey": ACTIVE_TRADE_PARTITION_KEY, "RowKey": trade_key}
+
+    @staticmethod
+    def make_active_trade_key(
+        strategy: str,
+        instrument: str,
+        side: str,
+        account: str = "",
+    ) -> str:
+        return "|".join(
+            [
+                str(account or "").strip().lower(),
+                str(strategy or "").strip().lower(),
+                str(instrument or "").strip().lower(),
+                str(side or "").strip().lower(),
+            ]
+        )
 
     def _log_state(self, event_name: str, dedupe_key: str, **fields: Any) -> None:
         if not self._logger:
@@ -241,6 +261,50 @@ class TradingStateStore:
             mode=UpdateMode.MERGE,
         )
         self._log_state("state.completed", dedupe_key, status="completed")
+
+    def get_active_trade(self, trade_key: str) -> Optional[dict[str, Any]]:
+        try:
+            return self._table_client().get_entity(ACTIVE_TRADE_PARTITION_KEY, trade_key)
+        except ResourceNotFoundError:
+            return None
+
+    def upsert_active_trade(
+        self,
+        trade_key: str,
+        deal_id: str,
+        strategy: str,
+        instrument: str,
+        side: str,
+        account: str = "",
+        epic: str = "",
+    ) -> None:
+        self._table_client().upsert_entity(
+            {
+                **self._active_trade_entity(trade_key),
+                "DealId": str(deal_id or "").strip(),
+                "Strategy": str(strategy or "").strip(),
+                "Instrument": str(instrument or "").strip(),
+                "Side": str(side or "").strip(),
+                "Account": str(account or "").strip(),
+                "Epic": str(epic or "").strip(),
+                "UpdatedAt": utc_now_iso(),
+            },
+            mode=UpdateMode.MERGE,
+        )
+        self._log_state(
+            "state.active_trade_upserted",
+            trade_key,
+            deal_id=str(deal_id or "").strip(),
+            instrument=str(instrument or "").strip(),
+            side=str(side or "").strip(),
+        )
+
+    def clear_active_trade(self, trade_key: str) -> None:
+        try:
+            self._table_client().delete_entity(ACTIVE_TRADE_PARTITION_KEY, trade_key)
+        except ResourceNotFoundError:
+            return
+        self._log_state("state.active_trade_cleared", trade_key, status="deleted")
 
     def mark_failed(self, dedupe_key: str, error: str) -> None:
         self._table_client().upsert_entity(

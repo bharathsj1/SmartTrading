@@ -18,6 +18,7 @@ class NormalizedWebhook:
     identifier: str
     account: str
     quantity: float
+    quantity_percent: Optional[float]
     price: Optional[float]
     sl: Optional[float]
     tp: Optional[float]
@@ -56,6 +57,9 @@ class NormalizedWebhook:
             quantity = cls._to_float(payload.get("qty"))
         if quantity is None or quantity <= 0:
             quantity = 1.0
+        quantity_percent = cls._to_float(payload.get("qty_percent"))
+        if quantity_percent is None:
+            quantity_percent = cls._to_float(payload.get("quantity_percent"))
 
         tp1 = cls._to_float(payload.get("tp1"))
         tp = tp1
@@ -79,6 +83,7 @@ class NormalizedWebhook:
             identifier=str(payload.get("identifier") or "").strip(),
             account=str(payload.get("account") or "").strip(),
             quantity=quantity,
+            quantity_percent=quantity_percent,
             price=cls._to_float(payload.get("price")),
             sl=sl,
             tp=tp,
@@ -110,6 +115,7 @@ class NormalizedWebhook:
             self.bar_time,
             self.comment,
             str(self.quantity),
+            str(self.quantity_percent),
         ]
         return "|".join(part.strip().lower() for part in parts)
 

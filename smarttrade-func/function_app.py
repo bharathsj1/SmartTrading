@@ -27,6 +27,8 @@ QUEUE_PUBLISHER = QueuePublisher(SETTINGS, logger=LOGGER)
 CAPITAL_SERVICE = CapitalTradingService(SETTINGS, logger=LOGGER)
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
+OPEN_EVENTS = {"entry", "open", "long", "short", "buy", "sell", "reversal", "reverse", "flip"}
+CLOSE_EVENTS = {"close", "exit"}
 
 
 def _json_response(body: dict[str, Any], status_code: int) -> func.HttpResponse:
@@ -35,6 +37,70 @@ def _json_response(body: dict[str, Any], status_code: int) -> func.HttpResponse:
         status_code=status_code,
         mimetype="application/json",
     )
+
+
+def _normalize_trade_side(value: str) -> str:
+    side = str(value or "").strip().upper()
+    if side in {"BUY", "LONG"}:
+        return "BUY"
+    if side in {"SELL", "SHORT"}:
+        return "SELL"
+    return side
+
+
+def _route_event(webhook: NormalizedWebhook) -> str:
+    event = str(webhook.event or "").strip().lower()
+    if event:
+        return event
+    if webhook.action in {"BUY", "SELL"} or webhook.side in {"BUY", "SELL", "LONG", "SHORT"}:
+        return "entry"
+    return "close"
+
+
+def _trade_side_for_webhook(webhook: NormalizedWebhook) -> str:
+    route_event = _route_event(webhook)
+    if route_event in OPEN_EVENTS:
+        return _normalize_trade_side(webhook.action or webhook.side or route_event)
+    return _normalize_trade_side(webhook.side or webhook.action)
+
+
+def _active_trade_key_for_webhook(webhook: NormalizedWebhook) -> str:
+    side = _trade_side_for_webhook(webhook)
+    if not side or not webhook.instrument:
+        return ""
+    return STATE_STORE.make_active_trade_key(
+        strategy=webhook.strategy,
+        instrument=webhook.instrument,
+        side=side,
+        account=webhook.account,
+    )
+
+
+def _payload_with_deal_id(webhook: NormalizedWebhook, deal_id: str) -> NormalizedWebhook:
+    if not deal_id or webhook.deal_id:
+        return webhook
+    payload = dict(webhook.raw)
+    payload["deal_id"] = deal_id
+    return NormalizedWebhook.from_dict(payload)
+
+
+def _extract_opened_deal_id(result: dict[str, Any]) -> str:
+    direct = str(result.get("dealId") or "").strip()
+    if direct:
+        return direct
+    opened = result.get("opened") or {}
+    return str(opened.get("dealId") or "").strip()
+
+
+def _deal_closed_fully(result: dict[str, Any], deal_id: str) -> bool:
+    target_deal_id = str(deal_id or "").strip()
+    if not target_deal_id:
+        return False
+    for detail in result.get("details") or []:
+        if str(detail.get("dealId") or "").strip() != target_deal_id:
+            continue
+        return str(detail.get("mode") or "").strip().lower() == "full"
+    return False
 
 
 @app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
@@ -77,6 +143,7 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
         action=webhook.action,
         side=webhook.side,
         quantity=webhook.quantity,
+        quantity_percent=webhook.quantity_percent,
         strategy=webhook.strategy,
         bar_time=webhook.bar_time,
         comment=webhook.comment,
@@ -157,6 +224,7 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
         side=webhook.side,
         instrument=webhook.instrument,
         quantity=webhook.quantity,
+        quantity_percent=webhook.quantity_percent,
     )
 
     return _json_response(
@@ -172,6 +240,7 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
 def trading_worker(msg: func.QueueMessage) -> None:
     raw_body = msg.get_body().decode("utf-8")
     envelope = QueueEnvelope.from_dict(json.loads(raw_body))
+    payload = envelope.payload
     processing_started_at = utc_now_iso()
     queue_latency_ms = milliseconds_between(envelope.received_at, processing_started_at)
 
@@ -215,9 +284,28 @@ def trading_worker(msg: func.QueueMessage) -> None:
     )
 
     try:
+        trade_key = _active_trade_key_for_webhook(payload)
+        route_event = _route_event(payload)
+        if route_event in CLOSE_EVENTS and not payload.deal_id and trade_key:
+            active_trade = STATE_STORE.get_active_trade(trade_key)
+            active_deal_id = str((active_trade or {}).get("DealId") or "").strip()
+            if active_deal_id:
+                payload = _payload_with_deal_id(payload, active_deal_id)
+                log_event(
+                    LOGGER,
+                    logging.INFO,
+                    "worker.active_trade_resolved",
+                    request_id=envelope.request_id,
+                    dedupe_key=envelope.dedupe_key,
+                    trade_key=trade_key,
+                    deal_id=active_deal_id,
+                    instrument=payload.instrument,
+                    side=_trade_side_for_webhook(payload),
+                )
+
         started = time.perf_counter()
         result = CAPITAL_SERVICE.execute_webhook(
-            envelope.payload,
+            payload,
             request_id=envelope.request_id,
             dedupe_key=envelope.dedupe_key,
         )
@@ -250,6 +338,30 @@ def trading_worker(msg: func.QueueMessage) -> None:
             raise RuntimeError(safe_json_dumps(result))
 
         STATE_STORE.mark_completed(envelope.dedupe_key, result)
+        if route_event in OPEN_EVENTS and trade_key:
+            opened_deal_id = _extract_opened_deal_id(result)
+            if opened_deal_id:
+                trade_side = _trade_side_for_webhook(payload)
+                STATE_STORE.upsert_active_trade(
+                    trade_key=trade_key,
+                    deal_id=opened_deal_id,
+                    strategy=payload.strategy,
+                    instrument=payload.instrument,
+                    side=trade_side,
+                    account=payload.account,
+                    epic=payload.epic,
+                )
+                opposite_side = "SELL" if trade_side == "BUY" else "BUY" if trade_side == "SELL" else ""
+                if opposite_side:
+                    opposite_trade_key = STATE_STORE.make_active_trade_key(
+                        strategy=payload.strategy,
+                        instrument=payload.instrument,
+                        side=opposite_side,
+                        account=payload.account,
+                    )
+                    STATE_STORE.clear_active_trade(opposite_trade_key)
+        elif route_event in CLOSE_EVENTS and trade_key and _deal_closed_fully(result, payload.deal_id):
+            STATE_STORE.clear_active_trade(trade_key)
         log_event(
             LOGGER,
             logging.INFO,

@@ -642,6 +642,7 @@ class CapitalTradingService:
 
             deal_reference = str(create.get("dealReference", "")).strip()
             confirm = self._confirm_by_reference(deal_reference) if deal_reference else {}
+            opened_deal_id = self._extract_open_dealid_from_confirm(confirm) if confirm else ""
 
             attach_result: Optional[dict[str, Any]] = None
             if attach_if_missing and confirm and tp_value > 0:
@@ -676,6 +677,7 @@ class CapitalTradingService:
             result: dict[str, Any] = {
                 "ok": True,
                 "message": "Market order submitted.",
+                "dealId": opened_deal_id,
                 "dealReference": deal_reference,
                 "confirm": confirm,
                 "sent": payload,
@@ -702,6 +704,7 @@ class CapitalTradingService:
         instrument_key: str = "",
         identifier: str = "",
         quantity: float = 0.0,
+        quantity_percent: float = 0.0,
     ) -> dict[str, Any]:
         with self._lock:
             self._apply_runtime_credentials(identifier)
@@ -709,6 +712,11 @@ class CapitalTradingService:
             if side and side not in {"BUY", "SELL"}:
                 return {"ok": False, "error": "invalid_action", "message": "side must be BUY/SELL when provided."}
             close_quantity = self._safe_float(quantity)
+            close_percent = self._safe_float(quantity_percent)
+            if close_percent < 0:
+                return {"ok": False, "error": "invalid_quantity_percent", "message": "quantity_percent must be non-negative."}
+            if close_percent > 100:
+                return {"ok": False, "error": "invalid_quantity_percent", "message": "quantity_percent cannot exceed 100."}
 
             resolved_epic = ""
             if epic or instrument_key:
@@ -727,7 +735,11 @@ class CapitalTradingService:
                         epic=str(market.get("epic", "")).strip(),
                         direction=str(position.get("direction", "")).upper(),
                         current_size=self._safe_float(position.get("size")),
-                        quantity=close_quantity,
+                        quantity=(
+                            self._safe_float(position.get("size")) * close_percent / 100.0
+                            if close_percent > 0
+                            else close_quantity
+                        ),
                     )
                     if close_result.get("ok"):
                         return {
@@ -767,7 +779,9 @@ class CapitalTradingService:
             remaining_to_close = close_quantity
             for target in targets:
                 size_to_close = 0.0
-                if close_quantity > 0:
+                if close_percent > 0:
+                    size_to_close = target["size"] * close_percent / 100.0
+                elif close_quantity > 0:
                     if remaining_to_close <= 0:
                         break
                     size_to_close = min(target["size"], remaining_to_close)
@@ -786,7 +800,7 @@ class CapitalTradingService:
                         continue
                     details.append(close_result)
                     closed.append(target["dealId"])
-                    if close_quantity > 0:
+                    if close_percent <= 0 and close_quantity > 0:
                         remaining_to_close = max(remaining_to_close - float(close_result.get("closed_size") or 0.0), 0.0)
                 except Exception as exc:
                     errors.append(f"{target['dealId']}: {self._clean_message(str(exc))}")
@@ -888,6 +902,7 @@ class CapitalTradingService:
         action = webhook.action
         side = webhook.side
         requested_quantity = webhook.quantity if webhook.quantity > 0 else 0.0
+        requested_quantity_percent = webhook.quantity_percent if webhook.quantity_percent and webhook.quantity_percent > 0 else 0.0
         instrument_key = webhook.instrument or self._settings.default_instrument
         epic = webhook.epic
         deal_id = webhook.deal_id
@@ -915,6 +930,7 @@ class CapitalTradingService:
             side=side,
             instrument=instrument_key,
             quantity=quantity,
+            quantity_percent=requested_quantity_percent,
             payload=mask_sensitive(webhook.raw),
         )
 
@@ -958,6 +974,7 @@ class CapitalTradingService:
                 instrument_key=instrument_key,
                 identifier=identifier,
                 quantity=quantity,
+                quantity_percent=requested_quantity_percent,
             )
         else:
             result = {"ok": False, "error": "invalid_payload", "message": f"Unknown event: {event}"}
