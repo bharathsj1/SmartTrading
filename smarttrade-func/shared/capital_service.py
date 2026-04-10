@@ -186,13 +186,25 @@ class CapitalTradingService:
         normalized_keys = {
             self._normalize_instrument_key(candidate) for candidate in instrument_candidates if candidate
         }
+        resolved_quantity = quantity
         if any(str(key).startswith("forex_") for key in normalized_keys):
-            return 100000.0
-        if "metal_gold_spot" in normalized_keys:
-            return 10.0
-        if "metal_silver_spot" in normalized_keys:
-            return 1000.0
-        return quantity
+            resolved_quantity = 100000.0
+        elif "metal_gold_spot" in normalized_keys:
+            resolved_quantity = 10.0
+        elif "metal_silver_spot" in normalized_keys:
+            resolved_quantity = 1000.0
+        log_event(
+            self._logger,
+            logging.INFO,
+            "capital.quantity.resolved",
+            instrument=webhook.instrument,
+            ticker=webhook.ticker,
+            default_instrument=self._settings.default_instrument,
+            input_quantity=quantity,
+            normalized_keys=sorted(str(key) for key in normalized_keys),
+            resolved_quantity=resolved_quantity,
+        )
+        return resolved_quantity
 
     def _must_have_credentials(self) -> None:
         if not self._api_key:
