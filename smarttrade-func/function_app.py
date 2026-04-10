@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -26,10 +27,22 @@ LOGGER = logging.getLogger("trading.azure_functions")
 STATE_STORE = TradingStateStore(SETTINGS, logger=LOGGER)
 QUEUE_PUBLISHER = QueuePublisher(SETTINGS, logger=LOGGER)
 CAPITAL_SERVICE = CapitalTradingService(SETTINGS, logger=LOGGER)
+ensure_runtime_infrastructure(SETTINGS, logger=LOGGER)
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 OPEN_EVENTS = {"entry", "open", "long", "short", "buy", "sell", "reversal", "reverse", "flip"}
 CLOSE_EVENTS = {"close", "exit"}
+NON_RETRYABLE_ERRORS = {
+    "order_rejected",
+    "invalid_payload",
+    "invalid_action",
+    "invalid_quantity",
+    "invalid_epic",
+    "invalid_takeprofit",
+    "invalid_stoploss",
+    "hedging_mode_partial_close_unsupported",
+    "close_failed",
+}
 
 
 def _json_response(body: dict[str, Any], status_code: int) -> func.HttpResponse:
@@ -91,6 +104,27 @@ def _extract_opened_deal_id(result: dict[str, Any]) -> str:
         return direct
     opened = result.get("opened") or {}
     return str(opened.get("dealId") or "").strip()
+
+
+def _extract_opened_epic(result: dict[str, Any]) -> str:
+    direct = str(((result.get("sent") or {}).get("epic")) or "").strip()
+    if direct:
+        return direct
+    opened = result.get("opened") or {}
+    return str(((opened.get("sent") or {}).get("epic")) or "").strip()
+
+
+def _extract_opened_quantity(result: dict[str, Any]) -> float:
+    sent = result.get("sent") or {}
+    opened = result.get("opened") or {}
+    opened_sent = opened.get("sent") or {}
+    for value in (sent.get("size"), opened_sent.get("size")):
+        try:
+            if value is not None:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
 
 
 def _deal_closed_fully(result: dict[str, Any], deal_id: str) -> bool:
@@ -239,7 +273,23 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
 )
 def trading_worker(msg: func.QueueMessage) -> None:
     raw_body = msg.get_body().decode("utf-8")
-    envelope = QueueEnvelope.from_dict(json.loads(raw_body))
+    try:
+        envelope = QueueEnvelope.from_dict(QueuePublisher.decode_message_text(raw_body))
+    except Exception as exc:
+        decoded_preview = ""
+        try:
+            decoded_preview = base64.b64decode(raw_body, validate=True).decode("utf-8")
+        except Exception:
+            decoded_preview = ""
+        log_event(
+            LOGGER,
+            logging.ERROR,
+            "worker.message_decode_failed",
+            raw_body=raw_body,
+            decoded_preview=decoded_preview,
+            error=str(exc),
+        )
+        raise
     payload = envelope.payload
     processing_started_at = utc_now_iso()
     queue_latency_ms = milliseconds_between(envelope.received_at, processing_started_at)
@@ -286,8 +336,8 @@ def trading_worker(msg: func.QueueMessage) -> None:
     try:
         trade_key = _active_trade_key_for_webhook(payload)
         route_event = _route_event(payload)
+        active_trade = STATE_STORE.get_active_trade(trade_key) if trade_key else None
         if route_event in CLOSE_EVENTS and not payload.deal_id and trade_key:
-            active_trade = STATE_STORE.get_active_trade(trade_key)
             active_deal_id = str((active_trade or {}).get("DealId") or "").strip()
             if active_deal_id:
                 payload = _payload_with_deal_id(payload, active_deal_id)
@@ -335,6 +385,18 @@ def trading_worker(msg: func.QueueMessage) -> None:
                 end_to_end_latency_ms=end_to_end_latency_ms,
                 result_summary=summarize_result(result),
             )
+            if str(result.get("error") or "").strip().lower() in NON_RETRYABLE_ERRORS:
+                log_event(
+                    LOGGER,
+                    logging.WARNING,
+                    "worker.execution_stopped",
+                    request_id=envelope.request_id,
+                    dedupe_key=envelope.dedupe_key,
+                    retryable=False,
+                    error=str(result.get("error") or "").strip().lower(),
+                    result_summary=summarize_result(result),
+                )
+                return
             raise RuntimeError(safe_json_dumps(result))
 
         STATE_STORE.mark_completed(envelope.dedupe_key, result)
@@ -342,6 +404,8 @@ def trading_worker(msg: func.QueueMessage) -> None:
             opened_deal_id = _extract_opened_deal_id(result)
             if opened_deal_id:
                 trade_side = _trade_side_for_webhook(payload)
+                opened_quantity = _extract_opened_quantity(result)
+                opened_epic = _extract_opened_epic(result) or payload.epic
                 STATE_STORE.upsert_active_trade(
                     trade_key=trade_key,
                     deal_id=opened_deal_id,
@@ -349,7 +413,9 @@ def trading_worker(msg: func.QueueMessage) -> None:
                     instrument=payload.instrument,
                     side=trade_side,
                     account=payload.account,
-                    epic=payload.epic,
+                    epic=opened_epic,
+                    original_quantity=opened_quantity,
+                    remaining_quantity=opened_quantity,
                 )
                 opposite_side = "SELL" if trade_side == "BUY" else "BUY" if trade_side == "SELL" else ""
                 if opposite_side:
@@ -360,8 +426,22 @@ def trading_worker(msg: func.QueueMessage) -> None:
                         account=payload.account,
                     )
                     STATE_STORE.clear_active_trade(opposite_trade_key)
-        elif route_event in CLOSE_EVENTS and trade_key and _deal_closed_fully(result, payload.deal_id):
-            STATE_STORE.clear_active_trade(trade_key)
+        elif route_event in CLOSE_EVENTS and trade_key:
+            remaining_size = float(result.get("remaining_size") or 0.0)
+            active_trade_deal_id = str((active_trade or {}).get("DealId") or "").strip()
+            refreshed_deal_id = str(result.get("dealId") or active_trade_deal_id).strip()
+            active_original_quantity = float((active_trade or {}).get("OriginalQuantity") or 0.0)
+            active_epic = str((active_trade or {}).get("Epic") or payload.epic).strip()
+            if remaining_size > 0:
+                STATE_STORE.update_active_trade_quantities(
+                    trade_key=trade_key,
+                    remaining_quantity=remaining_size,
+                    original_quantity=active_original_quantity if active_original_quantity > 0 else None,
+                    deal_id=refreshed_deal_id,
+                    epic=active_epic,
+                )
+            elif _deal_closed_fully(result, payload.deal_id) or result.get("mode") == "partial" or result.get("closed_deals"):
+                STATE_STORE.clear_active_trade(trade_key)
         log_event(
             LOGGER,
             logging.INFO,

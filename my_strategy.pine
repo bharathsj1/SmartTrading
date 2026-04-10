@@ -17,7 +17,7 @@ strategy(
   process_orders_on_close = true)
 
 // Project #827
-// Actual version: @gu5tavo71 for Riccardo (@rikyfx for PineScripters Jobs)
+// Actual version: @gu5tavo71 for Riccardo (@rikyfx for PineScripters Jobs)ˀ
 // This script reuses open source code from another authors:
 // @PineCoders, Built-in Library, and Community Scripts
 // Disclaimer: I am not a financial advisor.

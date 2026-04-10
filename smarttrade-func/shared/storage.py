@@ -87,6 +87,26 @@ class QueuePublisher:
                 queue_name=self._settings.webhook_queue_name,
             )
 
+    @staticmethod
+    def decode_message_text(raw_body: str) -> dict[str, Any]:
+        text = str(raw_body or "").strip()
+        if not text:
+            raise ValueError("Queue message body is empty.")
+        try:
+            return json.loads(text)
+        except ValueError:
+            pass
+
+        try:
+            decoded = base64.b64decode(text, validate=True).decode("utf-8")
+        except Exception as exc:
+            raise ValueError("Queue message body is neither JSON nor base64-encoded JSON.") from exc
+
+        try:
+            return json.loads(decoded)
+        except ValueError as exc:
+            raise ValueError("Decoded queue message body is not valid JSON.") from exc
+
 
 class TradingStateStore:
     """Stores webhook idempotency and execution status in Azure Table Storage."""
@@ -277,6 +297,8 @@ class TradingStateStore:
         side: str,
         account: str = "",
         epic: str = "",
+        original_quantity: float = 0.0,
+        remaining_quantity: float = 0.0,
     ) -> None:
         self._table_client().upsert_entity(
             {
@@ -287,6 +309,8 @@ class TradingStateStore:
                 "Side": str(side or "").strip(),
                 "Account": str(account or "").strip(),
                 "Epic": str(epic or "").strip(),
+                "OriginalQuantity": float(original_quantity),
+                "RemainingQuantity": float(remaining_quantity),
                 "UpdatedAt": utc_now_iso(),
             },
             mode=UpdateMode.MERGE,
@@ -297,6 +321,37 @@ class TradingStateStore:
             deal_id=str(deal_id or "").strip(),
             instrument=str(instrument or "").strip(),
             side=str(side or "").strip(),
+            original_quantity=float(original_quantity),
+            remaining_quantity=float(remaining_quantity),
+        )
+
+    def update_active_trade_quantities(
+        self,
+        trade_key: str,
+        remaining_quantity: float,
+        original_quantity: Optional[float] = None,
+        deal_id: str = "",
+        epic: str = "",
+    ) -> None:
+        entity = {
+            **self._active_trade_entity(trade_key),
+            "RemainingQuantity": float(remaining_quantity),
+            "UpdatedAt": utc_now_iso(),
+        }
+        if original_quantity is not None:
+            entity["OriginalQuantity"] = float(original_quantity)
+        if deal_id:
+            entity["DealId"] = str(deal_id).strip()
+        if epic:
+            entity["Epic"] = str(epic).strip()
+        self._table_client().upsert_entity(entity, mode=UpdateMode.MERGE)
+        self._log_state(
+            "state.active_trade_quantity_updated",
+            trade_key,
+            remaining_quantity=float(remaining_quantity),
+            original_quantity=float(original_quantity) if original_quantity is not None else None,
+            deal_id=str(deal_id or "").strip(),
+            epic=str(epic or "").strip(),
         )
 
     def clear_active_trade(self, trade_key: str) -> None:

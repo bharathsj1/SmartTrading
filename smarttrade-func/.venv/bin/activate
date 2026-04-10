@@ -35,7 +35,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV=/Users/bharathsj/Documents/Trading/SmartTrading/smarttrade-func/.venv
+VIRTUAL_ENV=/Users/bharath/Projects/Trading/SmartTrading/smarttrade-func/.venv
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"
