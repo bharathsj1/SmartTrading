@@ -544,6 +544,37 @@ class CapitalTradingService:
             return None
         return webhook.tp
 
+    def _reason_based_close_percent(self, webhook: NormalizedWebhook) -> Optional[float]:
+        reason = str(webhook.reason or webhook.comment or "").strip().upper()
+        mapped = {
+            "LXTP1": 50.0,
+            "SXTP1": 50.0,
+            "LXTP2": 20.0,
+            "SXTP2": 20.0,
+            "LXTP3": 10.0,
+            "SXTP3": 10.0,
+            "LX": 100.0,
+            "SX": 100.0,
+            "SL": 100.0,
+        }.get(reason)
+        if mapped is None:
+            return None
+        log_event(
+            self._logger,
+            logging.INFO,
+            "capital.close.percent_inferred",
+            reason=reason,
+            instrument=webhook.instrument,
+            quantity=webhook.quantity,
+            quantity_percent=webhook.quantity_percent,
+            inferred_quantity_percent=mapped,
+        )
+        return mapped
+
+    def _uses_reason_based_staged_exit(self, webhook: NormalizedWebhook) -> bool:
+        reason = str(webhook.reason or webhook.comment or "").strip().upper()
+        return reason in {"LXTP1", "SXTP1", "LXTP2", "SXTP2", "LXTP3", "SXTP3"}
+
     def _extract_open_dealid_from_confirm(self, confirm: dict[str, Any]) -> str:
         for row in confirm.get("affectedDeals") or []:
             if str(row.get("status", "")).upper() in {"OPEN", "OPENED"}:
@@ -988,6 +1019,20 @@ class CapitalTradingService:
         deal_id = webhook.deal_id
         sl = webhook.sl
         tp = self._entry_take_profit(webhook)
+        # Pine staged exits currently do not send qty_percent, so infer them from reason codes.
+        # close_quantity_percent = webhook.quantity_percent
+        close_quantity_percent = self._reason_based_close_percent(webhook)
+        close_quantity = webhook.quantity
+        if self._uses_reason_based_staged_exit(webhook):
+            close_quantity = 0.0
+            log_event(
+                self._logger,
+                logging.INFO,
+                "capital.close.quantity_ignored",
+                reason=str(webhook.reason or webhook.comment or "").strip().upper(),
+                input_quantity=webhook.quantity,
+                inferred_quantity_percent=close_quantity_percent,
+            )
 
         if not event:
             if action in {"BUY", "SELL"} or side in {"BUY", "SELL", "LONG", "SHORT"}:
@@ -1051,8 +1096,8 @@ class CapitalTradingService:
                 deal_id=deal_id,
                 instrument_key=instrument_key,
                 identifier=identifier,
-                quantity=webhook.quantity,
-                quantity_percent=webhook.quantity_percent,
+                quantity=close_quantity,
+                quantity_percent=close_quantity_percent,
             )
         else:
             result = {"ok": False, "error": "invalid_payload", "message": f"Unknown event: {event}"}
