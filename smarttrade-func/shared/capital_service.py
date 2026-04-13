@@ -213,7 +213,7 @@ class CapitalTradingService:
         elif "metal_gold_spot" in normalized_keys:
             resolved_quantity = 10.0
         elif "metal_silver_spot" in normalized_keys:
-            resolved_quantity = 1000.0
+            resolved_quantity = 4000.0
         log_event(
             self._logger,
             logging.INFO,
