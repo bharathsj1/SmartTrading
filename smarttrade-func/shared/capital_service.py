@@ -201,11 +201,9 @@ class CapitalTradingService:
 
     def _resolve_order_quantity(self, webhook: NormalizedWebhook) -> float:
         quantity = webhook.quantity if webhook.quantity > 0 else 1.0
-        instrument_candidates = (
-            webhook.instrument,
-            webhook.ticker,
-            self._settings.default_instrument,
-        )
+        instrument_candidates = [webhook.instrument, webhook.ticker]
+        if not any(str(candidate or "").strip() for candidate in instrument_candidates):
+            instrument_candidates.append(self._settings.default_instrument)
         normalized_keys = {
             self._normalize_instrument_key(candidate) for candidate in instrument_candidates if candidate
         }
