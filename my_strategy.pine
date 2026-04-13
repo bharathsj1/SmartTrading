@@ -13,8 +13,8 @@ strategy(
   pyramiding              = 0,
   default_qty_type        = strategy.percent_of_equity,
   default_qty_value       = 10,
-  calc_on_every_tick      = false,
-  process_orders_on_close = true)
+  calc_on_every_tick      = true,
+  process_orders_on_close = false)
 
 // Project #827
 // Actual version: @gu5tavo71 for Riccardo (@rikyfx for PineScripters Jobs)
@@ -978,8 +978,8 @@ f_tp(_condition, _conditionValue, _leTrigger, _seTrigger, _src, _lxLvlTP, _sxLvl
 
 // @function        Similar to "ta.crossover" or "ta.crossunder"
 f_cross(_scr1, _scr2, _over)=>
-    _cross   = _over ? _scr1 > _scr2 and _scr1[1] < _scr2[1] :
-                       _scr1 < _scr2 and _scr1[1] > _scr2[1]
+    _cross   = _over ? _scr1 >= _scr2 and _scr1[1] < _scr2[1] :
+                       _scr1 <= _scr2 and _scr1[1] > _scr2[1]
 
 // ——————————— <calculations>
 //<set initial values>
@@ -1427,5 +1427,4 @@ label.delete(
 c_barCol = close > open ? color.rgb(120, 9, 139) : color.rgb(69, 155, 225)
 barcolor(
   i_barColOn ? c_barCol : na)
-
 
