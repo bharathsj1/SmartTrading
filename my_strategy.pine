@@ -13,8 +13,8 @@ strategy(
   pyramiding              = 0,
   default_qty_type        = strategy.percent_of_equity,
   default_qty_value       = 10,
-  calc_on_every_tick      = true,
-  process_orders_on_close = false)
+  calc_on_every_tick      = false,
+  process_orders_on_close = true)
 
 // Project #827
 // Actual version: @gu5tavo71 for Riccardo (@rikyfx for PineScripters Jobs)
@@ -978,14 +978,18 @@ f_tp(_condition, _conditionValue, _leTrigger, _seTrigger, _src, _lxLvlTP, _sxLvl
 
 // @function        Similar to "ta.crossover" or "ta.crossunder"
 f_cross(_scr1, _scr2, _over)=>
-    _cross   = _over ? _scr1 >= _scr2 and _scr1[1] < _scr2[1] :
-                       _scr1 <= _scr2 and _scr1[1] > _scr2[1]
+    _cross   = _over ? _scr1 > _scr2 and _scr1[1] < _scr2[1] :
+                       _scr1 < _scr2 and _scr1[1] > _scr2[1]
 
 // ——————————— <calculations>
 //<set initial values>
 var float condition = 0.0
 var float slLine    = 0.0
 var float entryLine = 0.0
+var bool  tp1Touched = false
+var bool  tp2Touched = false
+var bool  tp1Done    = false
+var bool  tp2Done    = false
 
 //<entry & exit orders>
 entryLine   := leTrigger and condition[1] <=  0.0 ? close :
@@ -1020,12 +1024,34 @@ tp3Line = useAtrTargets ? tp3LineAtr : tp3LinePct
 tp2Line = useAtrTargets ? tp2LineAtr : tp2LinePct
 tp1Line = useAtrTargets ? tp1LineAtr : tp1LinePct
 
+newLongTrade  = leTrigger and condition[1] <=  0.0
+newShortTrade = seTrigger and condition[1] >=  0.0
+
+if newLongTrade or newShortTrade
+    tp1Touched := false
+    tp2Touched := false
+    tp1Done := false
+    tp2Done := false
+
+if newLongTrade
+    tp1Touched := high >= tp1Line
+    tp2Touched := high >= tp2Line
+else if newShortTrade
+    tp1Touched := low <= tp1Line
+    tp2Touched := low <= tp2Line
+else if condition[1] >= 1.0
+    tp1Touched := tp1Touched or high >= tp1Line
+    tp2Touched := tp2Touched or high >= tp2Line
+else if condition[1] <= -1.0
+    tp1Touched := tp1Touched or low <= tp1Line
+    tp2Touched := tp2Touched or low <= tp2Line
+
 tp3Long      = f_cross(high, tp3Line, true )
 tp3Short     = f_cross(low,  tp3Line, false)
-tp2Long      = f_cross(high, tp2Line, true )
-tp2Short     = f_cross(low,  tp2Line, false)
-tp1Long      = f_cross(high, tp1Line, true )
-tp1Short     = f_cross(low,  tp1Line, false)
+tp2Long      = strategy.position_size > 0 and tp2Touched and tp1Done and not tp2Done
+tp2Short     = strategy.position_size < 0 and tp2Touched and tp1Done and not tp2Done
+tp1Long      = strategy.position_size > 0 and tp1Touched and not tp1Done
+tp1Short     = strategy.position_size < 0 and tp1Touched and not tp1Done
 
 switch
     leTrigger and condition[1] <=  0.0 => condition :=  1.0
@@ -1159,6 +1185,16 @@ if strategy.position_size < 0 and shortX and barstate.isconfirmed
       'Short',
       alert_message    = sxMsgWebhook,
       comment          = 'SX')
+
+if longTP1 or shortTP1
+    tp1Done := true
+if longTP2 or shortTP2
+    tp2Done := true
+if longSL or shortSL or longX or shortX
+    tp1Touched := false
+    tp2Touched := false
+    tp1Done := false
+    tp2Done := false
 
 // ——————————— <visuals>
 c_tp         = leTrigger or seTrigger ? na :
@@ -1427,4 +1463,3 @@ label.delete(
 c_barCol = close > open ? color.rgb(120, 9, 139) : color.rgb(69, 155, 225)
 barcolor(
   i_barColOn ? c_barCol : na)
-
