@@ -28,9 +28,9 @@ G_SCRIPT01   = '■ ' + 'SAIYAN OCC'
 //#region ———— <↓↓↓ G_SCRIPT01 ↓↓↓> {
 
 // === INPUTS ===
-res                       = input.timeframe('15',  'TIMEFRAME', group ="NON REPAINT")
+res                       = input.timeframe('45',  'TIMEFRAME', group ="NON REPAINT")
 useRes                    = input(true,            'Use Alternate Signals')
-intRes                    = input(8,               'Multiplier for Alernate Signals')
+intRes                    = input(4,               'Multiplier for Alernate Signals')
 basisType                 = input.string('ALMA',   'MA Type: ', options=['TEMA', 'HullMA', 'ALMA'])
 basisLen                  = input.int(2,           'MA Period', minval=1)
 offsetSigma               = input.int(5,           'Offset for LSMA / Sigma for ALMA', minval=0)
@@ -478,7 +478,7 @@ var target_bear = 0.
 /////////////////////////////////////////////
 // Create non-repainting security function
 rp_security(_symbol, _res, _src) =>
-    request.security(_symbol, _res, _src[barstate.isrealtime ? 1 : 0])
+    request.security(_symbol, _res, _src[barstate.isrealtime ? 1 : 0], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
 
 htfHigh = rp_security(syminfo.tickerid, res, high)
 htfLow  = rp_security(syminfo.tickerid, res, low)
@@ -493,7 +493,7 @@ rngfilt(x, r) =>
     rngfilt = x
     rngfilt := x > nz(rngfilt[1]) ? x - r < nz(rngfilt[1]) ? nz(rngfilt[1]) : x - r : x + r > nz(rngfilt[1]) ? nz(rngfilt[1]) : x + r
 percWidth(len, perc) => (ta.highest(len) - ta.lowest(len)) * perc / 100
-securityNoRep(sym, res, src) => request.security(sym, res, src, barmerge.gaps_off, barmerge.lookahead_on)
+securityNoRep(sym, res, src) => request.security(sym, res, src, barmerge.gaps_off, barmerge.lookahead_off)
 swingPoints(prd) =>
     pivHi = ta.pivothigh(prd, prd)
     pivLo = ta.pivotlow (prd, prd)
@@ -691,7 +691,7 @@ too_small_tf(res) => (timeframe.isweekly and res=="1") or (timeframe.ismonthly a
 securityNoRep1(sym, res, src) =>
     bool bull_ = na
     bull_ := equal_tf(res) ? src : bull_
-    bull_ := higher_tf(res) ? request.security(sym, res, src, barmerge.gaps_off, barmerge.lookahead_on) : bull_
+    bull_ := higher_tf(res) ? request.security(sym, res, src, barmerge.gaps_off, barmerge.lookahead_off) : bull_
     bull_array = request.security_lower_tf(syminfo.tickerid, higher_tf(res) ? str.tostring(f_chartTfInMinutes()) + (timeframe.isseconds ? "S" : "") : too_small_tf(res) ? (timeframe.isweekly ? "3" : "10") : res, src)
     if array.size(bull_array) > 1 and not equal_tf(res) and not higher_tf(res)
         bull_ := array.pop(bull_array)
@@ -743,7 +743,7 @@ variant(type, src, len, offSig, offALMA) =>
 
 // security wrapper for repeat calls
 reso(exp, use, res) =>
-    security_1 = request.security(syminfo.tickerid, res, exp, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+    security_1 = request.security(syminfo.tickerid, res, exp, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
     use ? security_1 : exp
 
 // === /BASE FUNCTIONS ===
