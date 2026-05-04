@@ -14,7 +14,11 @@ strategy(
   default_qty_type        = strategy.percent_of_equity,
   default_qty_value       = 10,
   calc_on_every_tick      = false,
-  process_orders_on_close = true)
+  process_orders_on_close = true,
+  max_bars_back           = 1000,
+  max_lines_count         = 500,
+  max_labels_count        = 500,
+  max_boxes_count         = 500)
 
 // Project #827
 // Actual version: @gu5tavo71 for Riccardo (@rikyfx for PineScripters Jobs)
@@ -48,20 +52,29 @@ history_of_demand_to_keep = input.int(20,          'History To Keep', minval = 5
 box_width                 = input.float(2.5,       'Supply/Demand Box Width', group = 'Settings', minval = 1, maxval = 10, step = 0.5)
 
 //INDICATOR VISUAL SETTINGS
+show_supply_demand       = input.bool(false,      'Show Legacy Supply/Demand Zones', group = 'Visual Settings', inline = '0')
 show_zigzag               = input.bool(false,      'Show Zig Zag', group = 'Visual Settings', inline = '1')
 show_price_action_labels  = input.bool(false,      'Show Price Action Labels', group = 'Visual Settings', inline = '2')
 
-supply_color              = input.color(#00000000, 'Supply', group = 'Visual Settings', inline = '3')
-supply_outline_color      = input.color(#00000000, 'Outline', group = 'Visual Settings', inline = '3')
+supply_color              = input.color(color.new(color.red, 85), 'Supply', group = 'Visual Settings', inline = '3')
+supply_outline_color      = input.color(color.new(color.red, 25), 'Outline', group = 'Visual Settings', inline = '3')
 
-demand_color              = input.color(#00000000, 'Demand', group = 'Visual Settings', inline = '4')
-demand_outline_color      = input.color(#00000000, 'Outline', group = 'Visual Settings', inline = '4')
+demand_color              = input.color(color.new(color.green, 85), 'Demand', group = 'Visual Settings', inline = '4')
+demand_outline_color      = input.color(color.new(color.green, 25), 'Outline', group = 'Visual Settings', inline = '4')
 
-bos_label_color           = input.color(#00000000, 'BOS Label', group = 'Visual Settings', inline = '5')
-poi_label_color           = input.color(#00000000, 'POI Label', group = 'Visual Settings', inline = '7')
-poi_border_color          = input.color(#00000000, 'POI border', group = 'Visual Settings', inline = '7')
-swing_type_color          = input.color(#00000000, 'Price Action Label', group = 'Visual Settings', inline = '8')
-zigzag_color              = input.color(#00000000, 'Zig Zag', group = 'Visual Settings', inline = '9')
+bos_label_color           = input.color(color.gray, 'BOS Label', group = 'Visual Settings', inline = '5')
+poi_label_color           = input.color(color.white, 'POI Label', group = 'Visual Settings', inline = '7')
+poi_border_color          = input.color(color.new(color.white, 70), 'POI border', group = 'Visual Settings', inline = '7')
+swing_type_color          = input.color(color.gray, 'Price Action Label', group = 'Visual Settings', inline = '8')
+zigzag_color              = input.color(color.gray, 'Zig Zag', group = 'Visual Settings', inline = '9')
+
+sd_supply_color           = show_supply_demand ? supply_color : #00000000
+sd_supply_outline_color   = show_supply_demand ? supply_outline_color : #00000000
+sd_demand_color           = show_supply_demand ? demand_color : #00000000
+sd_demand_outline_color   = show_supply_demand ? demand_outline_color : #00000000
+sd_bos_label_color        = show_supply_demand ? bos_label_color : #00000000
+sd_poi_label_color        = show_supply_demand ? poi_label_color : #00000000
+sd_poi_border_color       = show_supply_demand ? poi_border_color : #00000000
 
 //END SETTINGS
 
@@ -147,20 +160,20 @@ f_supply_demand(value_array, bn_array, box_array, label_array, box_type, atrValu
     //delete oldest box, and then create a new box and add it to the array
     if box_type == 1 and okay_to_draw
         box.delete( array.get(box_array, array.size(box_array) - 1) )
-        f_array_add_pop(box_array, box.new( left = box_left, top = box_top, right = box_right, bottom = box_bottom, border_color = supply_outline_color,
-             bgcolor = supply_color, extend = extend.right, text = 'SUPPLY', text_halign = text.align_center, text_valign = text.align_center, text_color = poi_label_color, text_size = size.small, xloc = xloc.bar_index))
+        f_array_add_pop(box_array, box.new( left = box_left, top = box_top, right = box_right, bottom = box_bottom, border_color = sd_supply_outline_color,
+             bgcolor = sd_supply_color, extend = extend.right, text = 'SUPPLY', text_halign = text.align_center, text_valign = text.align_center, text_color = sd_poi_label_color, text_size = size.small, xloc = xloc.bar_index))
         
         box.delete( array.get(label_array, array.size(label_array) - 1) )
-        f_array_add_pop(label_array, box.new( left = box_left, top = poi, right = box_right, bottom = poi, border_color = poi_border_color,
-             bgcolor = poi_border_color, extend = extend.right, text = 'POI', text_halign = text.align_left, text_valign = text.align_center, text_color = poi_label_color, text_size = size.small, xloc = xloc.bar_index))
+        f_array_add_pop(label_array, box.new( left = box_left, top = poi, right = box_right, bottom = poi, border_color = sd_poi_border_color,
+             bgcolor = sd_poi_border_color, extend = extend.right, text = 'POI', text_halign = text.align_left, text_valign = text.align_center, text_color = sd_poi_label_color, text_size = size.small, xloc = xloc.bar_index))
     else if box_type == -1 and okay_to_draw
         box.delete( array.get(box_array, array.size(box_array) - 1) )
-        f_array_add_pop(box_array, box.new( left = box_left, top = box_top, right = box_right, bottom = box_bottom, border_color = demand_outline_color,
-             bgcolor = demand_color, extend = extend.right,  text = 'DEMAND', text_halign = text.align_center, text_valign = text.align_center, text_color = poi_label_color, text_size = size.small, xloc = xloc.bar_index))
+        f_array_add_pop(box_array, box.new( left = box_left, top = box_top, right = box_right, bottom = box_bottom, border_color = sd_demand_outline_color,
+             bgcolor = sd_demand_color, extend = extend.right,  text = 'DEMAND', text_halign = text.align_center, text_valign = text.align_center, text_color = sd_poi_label_color, text_size = size.small, xloc = xloc.bar_index))
         
         box.delete( array.get(label_array, array.size(label_array) - 1) )
-        f_array_add_pop(label_array, box.new( left = box_left, top = poi, right = box_right, bottom = poi, border_color = poi_border_color,
-             bgcolor = poi_border_color, extend = extend.right,  text = 'POI', text_halign = text.align_left, text_valign = text.align_center, text_color = poi_label_color, text_size = size.small, xloc = xloc.bar_index))
+        f_array_add_pop(label_array, box.new( left = box_left, top = poi, right = box_right, bottom = poi, border_color = sd_poi_border_color,
+             bgcolor = sd_poi_border_color, extend = extend.right,  text = 'POI', text_halign = text.align_left, text_valign = text.align_center, text_color = sd_poi_label_color, text_size = size.small, xloc = xloc.bar_index))
 
 
 //      FUNCTION TO CHANGE SUPPLY/DEMAND TO A BOS IF BROKEN
@@ -179,7 +192,7 @@ f_sd_to_bos(box_array, bos_array, label_array, zone_type) =>
                 box.set_extend( array.get(bos_array,0), extend.none)
                 box.set_right( array.get(bos_array,0), bar_index)
                 box.set_text( array.get(bos_array,0), 'BOS' )
-                box.set_text_color( array.get(bos_array,0), bos_label_color)
+                box.set_text_color( array.get(bos_array,0), sd_bos_label_color)
                 box.set_text_size( array.get(bos_array,0), size.small)
                 box.set_text_halign( array.get(bos_array,0), text.align_center)
                 box.set_text_valign( array.get(bos_array,0), text.align_center)
@@ -200,7 +213,7 @@ f_sd_to_bos(box_array, bos_array, label_array, zone_type) =>
                 box.set_extend( array.get(bos_array,0), extend.none)
                 box.set_right( array.get(bos_array,0), bar_index)
                 box.set_text( array.get(bos_array,0), 'BOS' )
-                box.set_text_color( array.get(bos_array,0), bos_label_color)
+                box.set_text_color( array.get(bos_array,0), sd_bos_label_color)
                 box.set_text_size( array.get(bos_array,0), size.small)
                 box.set_text_halign( array.get(bos_array,0), text.align_center)
                 box.set_text_valign( array.get(bos_array,0), text.align_center)
@@ -300,7 +313,12 @@ f_extend_box_endpoint(current_demand_box)
 
 // Get user input
 
-channelBal     = input.bool(false, "Channel Balance", group = "CHART")
+channelBal       = input.bool(false, "Channel Balance", group = "CHART")
+showTrendLines   = input.bool(true,  "Trend Lines", group = "CHART")
+showTrendChannel = input.bool(true,  "Trend Channel", group = "CHART")
+trendLineLen     = input.int(150,    "Trend Line Length", minval = 20, group = "CHART")
+trendLineColor   = input.color(color.blue,  "Trend Line Color", group = "CHART")
+trendBandColor   = input.color(color.green, "Trend Channel Color", group = "CHART")
 
 
 
@@ -380,7 +398,7 @@ barsL          = 10
 barsR          = 10
 pivotHigh      = fixnan(ta.pivothigh(barsL, barsR)[1])
 pivotLow       = fixnan(ta.pivotlow(barsL, barsR)[1])
-source         = close, period = 150
+source         = close, period = trendLineLen
 [s, a, i]      = lr_slope(source, period)
 [upDev, dnDev] = lr_dev(source, period, s, a, i)
 
@@ -407,6 +425,46 @@ source         = close, period = 150
 y1 = low  - (ta.atr(30) * 2), y1B = low  - ta.atr(30)
 y2 = high + (ta.atr(30) * 2), y2B = high + ta.atr(30)
 x1 = bar_index - period + 1, _y1 = i + s * (period - 1), x2 = bar_index, _y2 = i
+
+var line trendMidLine   = na
+var line trendUpperLine = na
+var line trendLowerLine = na
+
+if barstate.islast
+    line.delete(trendMidLine)
+    line.delete(trendUpperLine)
+    line.delete(trendLowerLine)
+    if showTrendLines and not na(_y1) and not na(_y2)
+        trendMidLine := line.new(
+          x1,
+          _y1,
+          x2,
+          _y2,
+          xloc   = xloc.bar_index,
+          extend = extend.right,
+          color  = trendLineColor,
+          width  = 2)
+        if showTrendChannel and not na(upDev) and not na(dnDev)
+            trendUpperLine := line.new(
+              x1,
+              _y1 + upDev,
+              x2,
+              _y2 + upDev,
+              xloc   = xloc.bar_index,
+              extend = extend.right,
+              color  = trendBandColor,
+              style  = line.style_dashed,
+              width  = 1)
+            trendLowerLine := line.new(
+              x1,
+              _y1 - dnDev,
+              x2,
+              _y2 - dnDev,
+              xloc   = xloc.bar_index,
+              extend = extend.right,
+              color  = trendBandColor,
+              style  = line.style_dashed,
+              width  = 1)
 
 //Functions
 //Line Style function
@@ -685,6 +743,197 @@ emaBull = close > ema
 trendEma = ta.ema(close, 200)
 allowLongTrend = close > trendEma
 allowShortTrend = close < trendEma
+
+// ═════════ PRO Scalper Zones x2
+G_PRO_ZONES      = 'PRO Scalper Zones'
+psShowZones      = input.bool(true,  'Show PRO Supply/Demand', group = G_PRO_ZONES)
+psZDepth         = input.float(0.6,  'Zone depth x ATR', step = 0.05, group = G_PRO_ZONES)
+psZExtend        = input.int(120,    'Extend (bars)', minval = 10, group = G_PRO_ZONES)
+psL1             = input.int(10,     'Pivot A Left', minval = 2, group = G_PRO_ZONES)
+psR1             = input.int(10,     'Pivot A Right', minval = 2, group = G_PRO_ZONES)
+psL2             = input.int(5,      'Pivot B Left', minval = 2, group = G_PRO_ZONES)
+psR2             = input.int(5,      'Pivot B Right', minval = 2, group = G_PRO_ZONES)
+psShowZoneMid    = input.bool(true,  'Show zone midline', group = G_PRO_ZONES)
+psOnlyTrendZone  = input.bool(false, 'Show only in-trend zones', group = G_PRO_ZONES)
+psLabSize        = input.string('Small', 'Label size', options = ['Tiny', 'Small', 'Normal'], group = G_PRO_ZONES)
+psLabelSize      = psLabSize == 'Tiny' ? size.tiny : psLabSize == 'Small' ? size.small : size.normal
+psAtr            = ta.atr(14)
+
+psColSupIn       = color.new(#E57373, 76)
+psColSupOut      = color.new(#E57373, 96)
+psColSupBrIn     = color.new(#E57373, 25)
+psColSupBrOut    = color.new(#E57373, 90)
+psColDemIn       = color.new(#81C784, 76)
+psColDemOut      = color.new(#81C784, 96)
+psColDemBrIn     = color.new(#81C784, 25)
+psColDemBrOut    = color.new(#81C784, 90)
+psColHide        = color.new(color.white, 100)
+psMidCol         = color.new(color.gray, 50)
+
+type PsPairState
+    box   sup
+    float supTop
+    float supBot
+    line  supMid
+    box   dem
+    float demTop
+    float demBot
+    line  demMid
+    int   supTouches
+    int   demTouches
+    bool  inSupPrev
+    bool  inDemPrev
+    label labSup
+    label labDem
+
+psMkZone(_left, _top, _bot, _isSupply, _right, _inTrend) =>
+    fillColor = _isSupply ? (_inTrend ? psColSupIn : psColSupOut) : (_inTrend ? psColDemIn : psColDemOut)
+    borderColor = _isSupply ? (_inTrend ? psColSupBrIn : psColSupBrOut) : (_inTrend ? psColDemBrIn : psColDemBrOut)
+    box.new(_left, _top, _right, _bot, xloc = xloc.bar_index, bgcolor = fillColor, border_color = borderColor)
+
+psMakeMidline(_x0, _mid) =>
+    line.new(_x0, _mid, _x0 + psZExtend, _mid, xloc = xloc.bar_index, extend = extend.none, style = line.style_dashed, color = psMidCol, width = 1)
+
+psUpdatePair(_ph, _pl, _rightBars, PsPairState _state, _tag) =>
+    box psSupRet = _state.sup
+    float psSTop = _state.supTop
+    float psSBot = _state.supBot
+    line psSMidL = _state.supMid
+    box psDemRet = _state.dem
+    float psDTop = _state.demTop
+    float psDBot = _state.demBot
+    line psDMidL = _state.demMid
+    int psSupT = _state.supTouches
+    int psDemT = _state.demTouches
+    bool psWasS = _state.inSupPrev
+    bool psWasD = _state.inDemPrev
+    label psLSup = _state.labSup
+    label psLDem = _state.labDem
+
+    if psShowZones and not na(_ph)
+        psSTop := _ph
+        psSBot := _ph - psZDepth * psAtr
+        int psX0 = bar_index - _rightBars
+        if not na(psSupRet)
+            box.delete(psSupRet)
+        if not na(psSMidL)
+            line.delete(psSMidL)
+        psSupRet := psMkZone(psX0, psSTop, psSBot, true, bar_index + psZExtend, allowShortTrend)
+        if psShowZoneMid
+            psSMidL := psMakeMidline(psX0, (psSTop + psSBot) * 0.5)
+        psSupT := 0
+        psWasS := false
+        if not na(psLSup)
+            label.delete(psLSup)
+        psLSup := label.new(psX0, psSTop, 'Supply ' + _tag + ' (0)', xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, size = psLabelSize, color = color.new(color.black, 100), textcolor = color.white)
+
+    if psShowZones and not na(_pl)
+        psDBot := _pl
+        psDTop := _pl + psZDepth * psAtr
+        int psX1 = bar_index - _rightBars
+        if not na(psDemRet)
+            box.delete(psDemRet)
+        if not na(psDMidL)
+            line.delete(psDMidL)
+        psDemRet := psMkZone(psX1, psDTop, psDBot, false, bar_index + psZExtend, allowLongTrend)
+        if psShowZoneMid
+            psDMidL := psMakeMidline(psX1, (psDTop + psDBot) * 0.5)
+        psDemT := 0
+        psWasD := false
+        if not na(psLDem)
+            label.delete(psLDem)
+        psLDem := label.new(psX1, psDBot, 'Demand ' + _tag + ' (0)', xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, size = psLabelSize, color = color.new(color.black, 100), textcolor = color.white)
+
+    bool psSupInTrend = allowShortTrend
+    bool psDemInTrend = allowLongTrend
+
+    if not na(psSupRet)
+        if psOnlyTrendZone and not psSupInTrend
+            box.set_bgcolor(psSupRet, psColHide)
+            box.set_border_color(psSupRet, psColHide)
+            if not na(psLSup)
+                label.delete(psLSup)
+                psLSup := na
+            if not na(psSMidL)
+                line.delete(psSMidL)
+                psSMidL := na
+        else
+            box.set_bgcolor(psSupRet, psSupInTrend ? psColSupIn : psColSupOut)
+            box.set_border_color(psSupRet, psSupInTrend ? psColSupBrIn : psColSupBrOut)
+            if psShowZoneMid and na(psSMidL)
+                psSMidL := psMakeMidline(box.get_left(psSupRet), (psSTop + psSBot) * 0.5)
+            if na(psLSup)
+                psLSup := label.new(box.get_left(psSupRet), psSTop, 'Supply ' + _tag + ' (' + str.tostring(psSupT) + ')', xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, size = psLabelSize, color = color.new(color.black, 100), textcolor = color.white)
+
+    if not na(psDemRet)
+        if psOnlyTrendZone and not psDemInTrend
+            box.set_bgcolor(psDemRet, psColHide)
+            box.set_border_color(psDemRet, psColHide)
+            if not na(psLDem)
+                label.delete(psLDem)
+                psLDem := na
+            if not na(psDMidL)
+                line.delete(psDMidL)
+                psDMidL := na
+        else
+            box.set_bgcolor(psDemRet, psDemInTrend ? psColDemIn : psColDemOut)
+            box.set_border_color(psDemRet, psDemInTrend ? psColDemBrIn : psColDemBrOut)
+            if psShowZoneMid and na(psDMidL)
+                psDMidL := psMakeMidline(box.get_left(psDemRet), (psDTop + psDBot) * 0.5)
+            if na(psLDem)
+                psLDem := label.new(box.get_left(psDemRet), psDBot, 'Demand ' + _tag + ' (' + str.tostring(psDemT) + ')', xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, size = psLabelSize, color = color.new(color.black, 100), textcolor = color.white)
+
+    bool psInS = not na(psSTop) and not na(psSBot) and high >= psSBot and low <= psSTop
+    bool psInD = not na(psDTop) and not na(psDBot) and high >= psDBot and low <= psDTop
+    if psInS and not psWasS
+        psSupT += 1
+    psWasS := psInS
+    if psInD and not psWasD
+        psDemT += 1
+    psWasD := psInD
+
+    if not na(psLSup)
+        label.set_x(psLSup, not na(psSupRet) ? box.get_left(psSupRet) : bar_index)
+        label.set_y(psLSup, psSTop)
+        label.set_text(psLSup, 'Supply ' + _tag + ' (' + str.tostring(psSupT) + ')')
+    if not na(psLDem)
+        label.set_x(psLDem, not na(psDemRet) ? box.get_left(psDemRet) : bar_index)
+        label.set_y(psLDem, psDBot)
+        label.set_text(psLDem, 'Demand ' + _tag + ' (' + str.tostring(psDemT) + ')')
+
+    PsPairState.new(psSupRet, psSTop, psSBot, psSMidL, psDemRet, psDTop, psDBot, psDMidL, psSupT, psDemT, psWasS, psWasD, psLSup, psLDem)
+
+var PsPairState psPairA = PsPairState.new(na, na, na, na, na, na, na, na, 0, 0, false, false, na, na)
+var PsPairState psPairB = PsPairState.new(na, na, na, na, na, na, na, na, 0, 0, false, false, na, na)
+
+psPhA = ta.pivothigh(high, psL1, psR1)
+psPlA = ta.pivotlow(low, psL1, psR1)
+psPairA := psUpdatePair(psPhA, psPlA, psR1, psPairA, 'A')
+
+psPhB = ta.pivothigh(high, psL2, psR2)
+psPlB = ta.pivotlow(low, psL2, psR2)
+psPairB := psUpdatePair(psPhB, psPlB, psR2, psPairB, 'B')
+
+psExtendBox(_box) =>
+    if not na(_box)
+        box.set_right(_box, bar_index + psZExtend)
+
+psExtendLine(_line, _y) =>
+    if not na(_line)
+        line.set_x2(_line, bar_index + psZExtend)
+        if not na(_y)
+            line.set_y1(_line, _y)
+            line.set_y2(_line, _y)
+
+psExtendBox(psPairA.sup)
+psExtendBox(psPairA.dem)
+psExtendBox(psPairB.sup)
+psExtendBox(psPairB.dem)
+psExtendLine(psPairA.supMid, na(psPairA.supTop) or na(psPairA.supBot) ? na : (psPairA.supTop + psPairA.supBot) * 0.5)
+psExtendLine(psPairA.demMid, na(psPairA.demTop) or na(psPairA.demBot) ? na : (psPairA.demTop + psPairA.demBot) * 0.5)
+psExtendLine(psPairB.supMid, na(psPairB.supTop) or na(psPairB.supBot) ? na : (psPairB.supTop + psPairB.supBot) * 0.5)
+psExtendLine(psPairB.demMid, na(psPairB.demTop) or na(psPairB.demBot) ? na : (psPairB.demTop + psPairB.demBot) * 0.5)
+
 equal_tf(res) => str.tonumber(res) == f_chartTfInMinutes() and not timeframe.isseconds
 higher_tf(res) => str.tonumber(res) > f_chartTfInMinutes() or timeframe.isseconds
 too_small_tf(res) => (timeframe.isweekly and res=="1") or (timeframe.ismonthly and str.tonumber(res) < 10)
@@ -816,10 +1065,11 @@ openSeriesAlt  = reso(openSeries, useRes, stratRes)
 // ——————————— <↑↑↑ G_SCRIPT01 ↑↑↑>
 
 //<triggers>
-lxTrigger    = false
-sxTrigger    = false
 leTrigger    = ta.crossover (closeSeriesAlt, openSeriesAlt)
 seTrigger    = ta.crossunder(closeSeriesAlt, openSeriesAlt)
+
+lxTrigger    = seTrigger   // close long when short signal comes
+sxTrigger    = leTrigger   // close short when long signal comes
 
 G_RISK       = '■ ' + 'Risk Management'
 //#region ———— <↓↓↓ G_RISK ↓↓↓> {
@@ -846,7 +1096,7 @@ O_SXMSGX     = 'Short Exit'
 // ——————————— <input>          |           |                               |                        Line length guide |
 i_lxLvlTP1   = input.float      (0.8,       'Level TP1'                     , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP1   = input.float      (50,        'Qty   TP1'                     , group = G_RISK,
+i_lxQtyTP1   = input.float      (30,        'Qty   TP1'                     , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlTP2   = input.float      (1.5,       'Level TP2'                     , group = G_RISK,
      tooltip =                   T_LVL)
@@ -854,7 +1104,7 @@ i_lxQtyTP2   = input.float      (30,        'Qty   TP2'                     , gr
      tooltip =                   T_QTY)
 i_lxLvlTP3   = input.float      (2,         'Level TP3'                     , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP3   = input.float      (20,        'Runner Qty'                    , group = G_RISK,
+i_lxQtyTP3   = input.float      (40,        'Runner Qty'                    , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlSL    = input.float      (0.5,       'Stop Loss'                     , group = G_RISK,
      tooltip =                   T_LVL)
@@ -1056,18 +1306,18 @@ tp1Long      = f_cross(high, tp1Line, true )
 tp1Short     = f_cross(low,  tp1Line, false)
 
 switch
-    leEntrySignal => condition :=  1.0
-    seEntrySignal => condition := -1.0
-    tp3Long   and condition[1] ==  1.2 => condition :=  0.0
-    tp3Short  and condition[1] == -1.2 => condition :=  0.0
-    tp2Long   and condition[1] ==  1.1 => condition :=  1.2
-    tp2Short  and condition[1] == -1.1 => condition := -1.2
-    tp1Long   and condition[1] ==  1.0 => condition :=  1.1
-    tp1Short  and condition[1] == -1.0 => condition := -1.1
     slLong    and condition[1] >=  1.0 => condition :=  0.0
     slShort   and condition[1] <= -1.0 => condition :=  0.0
     lxTrigger and condition[1] >=  1.0 => condition :=  0.0
     sxTrigger and condition[1] <= -1.0 => condition :=  0.0
+    leEntrySignal => condition :=  1.0
+    seEntrySignal => condition := -1.0
+    tp3Long   and condition[1] ==  1.2 => condition :=  1.2
+    tp3Short  and condition[1] == -1.2 => condition := -1.2
+    tp2Long   and condition[1] ==  1.1 => condition :=  1.2
+    tp2Short  and condition[1] == -1.1 => condition := -1.2
+    tp1Long   and condition[1] ==  1.0 => condition :=  1.1
+    tp1Short  and condition[1] == -1.0 => condition := -1.1
 
 tpQtyTotal = i_lxQtyTP1 + i_lxQtyTP2 + i_lxQtyTP3
 tp1OriginalQtyPct = tpQtyTotal > 0 ? i_lxQtyTP1 / tpQtyTotal * 100.0 : 50.0
@@ -1086,8 +1336,8 @@ longX        = lxTrigger and condition[1] >=  1.0 and condition ==  0.0
 shortX       = sxTrigger and condition[1] <= -1.0 and condition ==  0.0
 longSL       = slLong    and condition[1] >=  1.0 and condition ==  0.0
 shortSL      = slShort   and condition[1] <= -1.0 and condition ==  0.0
-longTP3      = tp3Long   and condition[1] ==  1.2 and condition ==  0.0
-shortTP3     = tp3Short  and condition[1] == -1.2 and condition ==  0.0
+longTP3      = false
+shortTP3     = false
 longTP2      = tp2Long   and condition[1] ==  1.1 and condition ==  1.2
 shortTP2     = tp2Short  and condition[1] == -1.1 and condition == -1.2
 longTP1      = tp1Long   and condition[1] ==  1.0 and condition ==  1.1
@@ -1138,20 +1388,16 @@ if strategy.position_size > 0 and longTP1 and barstate.isconfirmed
       'Long',
       qty_percent      = tp1CloseQtyPct,
       alert_message    = lxMsgTP1Webhook,
-      comment          = 'LXTP1')
+      comment          = 'TP1')
     tp1Done := true
 if strategy.position_size > 0 and longTP2 and barstate.isconfirmed
     strategy.close(
       'Long',
       qty_percent      = tp2CloseQtyPct,
       alert_message    = lxMsgTP2Webhook,
-      comment          = 'LXTP2')
-if strategy.position_size > 0 and longTP3 and barstate.isconfirmed
-    strategy.close(
-      'Long',
-      alert_message    = lxMsgTP3Webhook,
-      comment          = 'LXTP3')
-    tp1Done := false
+      comment          = 'TP2')
+// TP3 runner: do not close automatically
+// Remaining position will run until SL or opposite exit signal
 if strategy.position_size > 0 and longSL and barstate.isconfirmed
     strategy.close(
       'Long',
@@ -1162,7 +1408,7 @@ if strategy.position_size > 0 and longX and barstate.isconfirmed
     strategy.close(
       'Long',
       alert_message    = lxMsgWebhook,
-      comment          = 'LX')
+      comment          = 'X')
     tp1Done := false
 //<short orders>
 if strategy.position_size >= 0 and shortE and barstate.isconfirmed
@@ -1178,20 +1424,16 @@ if strategy.position_size < 0 and shortTP1 and barstate.isconfirmed
       'Short',
       qty_percent      = tp1CloseQtyPct,
       alert_message    = sxMsgTP1Webhook,
-      comment          = 'SXTP1')
+      comment          = 'TP1')
     tp1Done := true
 if strategy.position_size < 0 and shortTP2 and barstate.isconfirmed
     strategy.close(
       'Short',
       qty_percent      = tp2CloseQtyPct,
       alert_message    = sxMsgTP2Webhook,
-      comment          = 'SXTP2')
-if strategy.position_size < 0 and shortTP3 and barstate.isconfirmed
-    strategy.close(
-      'Short',
-      alert_message    = sxMsgTP3Webhook,
-      comment          = 'SXTP3')
-    tp1Done := false
+      comment          = 'TP2')
+// TP3 runner: do not close automatically
+// Remaining position will run until SL or opposite exit signal
 if strategy.position_size < 0 and shortSL and barstate.isconfirmed
     strategy.close(
       'Short',
@@ -1202,7 +1444,7 @@ if strategy.position_size < 0 and shortX and barstate.isconfirmed
     strategy.close(
       'Short',
       alert_message    = sxMsgWebhook,
-      comment          = 'SX')
+      comment          = 'X')
     tp1Done := false
 
 // ——————————— <visuals>
@@ -1368,102 +1610,115 @@ var label[] a_tp1label   = array.new_label(1)
 var label[] a_entryLabel = array.new_label(1)
 
 newEntry     = longE or shortE
-entryIndex   = 1
+tradeActive  = condition >= 1.0 or condition <= -1.0
+var int entryIndex = na
 entryIndex  := newEntry ? bar_index : nz(entryIndex[1])
 lasTrade     = bar_index >= entryIndex
 l_right      = 10
 
-line.delete(
-  f_qDq(a_slLine,
-  line.new(
-   entryIndex,
-   slLine,
-   last_bar_index + l_right,
-   slLine,
-   style = line.style_solid,
-   color = c_sl)))
-line.delete(
-  f_qDq(a_entryLine,
-  line.new(
-   entryIndex,
-   entryLine,
-   last_bar_index + l_right,
-   entryLine,
-   style = line.style_solid,
-   color = color.blue)))
-line.delete(
-  f_qDq(a_tp3Line,
-  line.new(
-   entryIndex,
-   tp3Line,
-   last_bar_index + l_right,
-   tp3Line,
-   style = line.style_solid,
-   color = c_tp)))
-line.delete(
-  f_qDq(a_tp2Line,
-  line.new(
-   entryIndex,
-   tp2Line,
-   last_bar_index + l_right,
-   tp2Line,
-   style = line.style_solid,
-   color = c_tp)))
-line.delete(
-  f_qDq(a_tp1Line,
-  line.new(
-   entryIndex,
-   tp1Line,
-   last_bar_index + l_right,
-   tp1Line,
-   style = line.style_solid,
-   color = c_tp)))
+if tradeActive and not na(entryIndex)
+    line.delete(
+      f_qDq(a_slLine,
+      line.new(
+       entryIndex,
+       slLine,
+       last_bar_index + l_right,
+       slLine,
+       style = line.style_solid,
+       color = c_sl)))
+    line.delete(
+      f_qDq(a_entryLine,
+      line.new(
+       entryIndex,
+       entryLine,
+       last_bar_index + l_right,
+       entryLine,
+       style = line.style_solid,
+       color = color.blue)))
+    line.delete(
+      f_qDq(a_tp3Line,
+      line.new(
+       entryIndex,
+       tp3Line,
+       last_bar_index + l_right,
+       tp3Line,
+       style = line.style_solid,
+       color = c_tp)))
+    line.delete(
+      f_qDq(a_tp2Line,
+      line.new(
+       entryIndex,
+       tp2Line,
+       last_bar_index + l_right,
+       tp2Line,
+       style = line.style_solid,
+       color = c_tp)))
+    line.delete(
+      f_qDq(a_tp1Line,
+      line.new(
+       entryIndex,
+       tp1Line,
+       last_bar_index + l_right,
+       tp1Line,
+       style = line.style_solid,
+       color = c_tp)))
 
-label.delete(
-  f_qDq(a_slLabel,
-  label.new(
-   last_bar_index + l_right,
-   slLine,
-   'SL: ' + str.tostring(slLine, '##.###'),
-   style = label.style_label_left,
-   textcolor  = color.white,
-   color = c_sl)))
-label.delete(
-  f_qDq(a_entryLabel,
-  label.new(
-   last_bar_index + l_right,
-   entryLine,
-   'Entry: ' + str.tostring(entryLine, '##.###'),
-   style = label.style_label_left,
-   textcolor  = color.white,
-   color = color.blue)))
-label.delete(
-  f_qDq(a_tp3label,
-  label.new(
-   last_bar_index + l_right,
-   tp3Line,
-   'TP3: ' + str.tostring(tp3Line, '##.###'),
-   style = label.style_label_left,
-   textcolor  = color.white,
-   color = c_tp)))
-label.delete(
-  f_qDq(a_tp2label,
-  label.new(
-   last_bar_index + l_right,
-   tp2Line,
-   'TP2: ' + str.tostring(tp2Line, '##.###'),
-   style = label.style_label_left,
-   textcolor  = color.white,
-   color = c_tp)))
-label.delete(
-  f_qDq(a_tp1label,
-  label.new(
-   last_bar_index + l_right,
-   tp1Line,
-   'TP1: ' + str.tostring(tp1Line, '##.###'),
-   style = label.style_label_left,
-   textcolor  = color.white,
-   color = c_tp)))
+    label.delete(
+      f_qDq(a_slLabel,
+      label.new(
+       last_bar_index + l_right,
+       slLine,
+       'SL: ' + str.tostring(slLine, '##.###'),
+       style = label.style_label_left,
+       textcolor  = color.white,
+       color = c_sl)))
+    label.delete(
+      f_qDq(a_entryLabel,
+      label.new(
+       last_bar_index + l_right,
+       entryLine,
+       'Entry: ' + str.tostring(entryLine, '##.###'),
+       style = label.style_label_left,
+       textcolor  = color.white,
+       color = color.blue)))
+    label.delete(
+      f_qDq(a_tp3label,
+      label.new(
+       last_bar_index + l_right,
+       tp3Line,
+       'TP3: ' + str.tostring(tp3Line, '##.###'),
+       style = label.style_label_left,
+       textcolor  = color.white,
+       color = c_tp)))
+    label.delete(
+      f_qDq(a_tp2label,
+      label.new(
+       last_bar_index + l_right,
+       tp2Line,
+       'TP2: ' + str.tostring(tp2Line, '##.###'),
+       style = label.style_label_left,
+       textcolor  = color.white,
+       color = c_tp)))
+    label.delete(
+      f_qDq(a_tp1label,
+      label.new(
+       last_bar_index + l_right,
+       tp1Line,
+       'TP1: ' + str.tostring(tp1Line, '##.###'),
+       style = label.style_label_left,
+       textcolor  = color.white,
+       color = c_tp)))
+else
+    line.delete(array.get(a_slLine, 0))
+    line.delete(array.get(a_entryLine, 0))
+    line.delete(array.get(a_tp3Line, 0))
+    line.delete(array.get(a_tp2Line, 0))
+    line.delete(array.get(a_tp1Line, 0))
+    label.delete(array.get(a_slLabel, 0))
+    label.delete(array.get(a_entryLabel, 0))
+    label.delete(array.get(a_tp3label, 0))
+    label.delete(array.get(a_tp2label, 0))
+    label.delete(array.get(a_tp1label, 0))
 
 //#endregion }
 // ——————————— <↑↑↑ G_SCRIPT02 ↑↑↑>
