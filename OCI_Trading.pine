@@ -1,0 +1,298 @@
+//@version=5
+strategy("OCS Style - Wider Adaptive TP SL Intrabar",
+     overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=5,
+     pyramiding=0,
+     max_labels_count=500,
+     max_lines_count=500,
+     calc_on_every_tick=true,
+     process_orders_on_close=false)
+
+// Inputs
+htf = input.timeframe("60", "Higher Timeframe Bias")
+useHtfFilter = input.bool(false, "Use HTF Filter")
+emaFastLen = input.int(21, "Fast EMA")
+emaSlowLen = input.int(50, "Slow EMA")
+atrLen = input.int(14, "ATR Length")
+swingLen = input.int(3, "Swing Length")
+extendBars = input.int(8, "Right Label Distance")
+
+tpStepAtr = input.float(0.65, "TP Step ATR", step=0.05)
+slAtr = input.float(1.20, "SL ATR", step=0.05)
+
+minTpDistance = input.float(1.20, "Minimum TP Distance")
+minSlDistance = input.float(2.00, "Minimum SL Distance")
+useVolatilityBoost = input.bool(true, "Use Volatility Boost")
+
+// EMAs
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+htfFast = request.security(syminfo.tickerid, htf, ta.ema(close, emaFastLen))
+htfSlow = request.security(syminfo.tickerid, htf, ta.ema(close, emaSlowLen))
+
+bullBias = htfFast > htfSlow
+bearBias = htfFast < htfSlow
+
+plot(emaFast, "Fast EMA", color=color.orange)
+plot(emaSlow, "Slow EMA", color=color.blue)
+
+// Structure
+prevHigh = ta.highest(high, swingLen)[1]
+prevLow = ta.lowest(low, swingLen)[1]
+
+atr = ta.atr(atrLen)
+atrBase = ta.sma(atr, 50)
+rawBoost = atrBase > 0 ? atr / atrBase : 1.0
+volBoost = useVolatilityBoost ? math.min(math.max(rawBoost, 1.0), 1.8) : 1.0
+
+// Signals
+strengthAbove = ta.crossover(close, prevHigh)
+weaknessBelow = ta.crossunder(close, prevLow)
+
+longAllowed = useHtfFilter ? bullBias : true
+shortAllowed = useHtfFilter ? bearBias : true
+
+longSignal = strengthAbove and longAllowed
+shortSignal = weaknessBelow and shortAllowed
+
+// Entry / SL / TP distances
+entry = close
+
+tpDistance = math.max(atr * tpStepAtr * volBoost, minTpDistance)
+slDistance = math.max(atr * slAtr * volBoost, minSlDistance)
+
+longSL = entry - slDistance
+shortSL = entry + slDistance
+
+longTP1 = entry + tpDistance * 1
+longTP2 = entry + tpDistance * 2
+longTP3 = entry + tpDistance * 3
+longTP4 = entry + tpDistance * 4
+longTP5 = entry + tpDistance * 5
+
+shortTP1 = entry - tpDistance * 1
+shortTP2 = entry - tpDistance * 2
+shortTP3 = entry - tpDistance * 3
+shortTP4 = entry - tpDistance * 4
+shortTP5 = entry - tpDistance * 5
+
+// Orders
+if longSignal
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long TP1", "Long", qty_percent=20, limit=longTP1, stop=longSL)
+    strategy.exit("Long TP2", "Long", qty_percent=20, limit=longTP2, stop=longSL)
+    strategy.exit("Long TP3", "Long", qty_percent=20, limit=longTP3, stop=longSL)
+    strategy.exit("Long TP4", "Long", qty_percent=20, limit=longTP4, stop=longSL)
+    strategy.exit("Long TP5", "Long", qty_percent=20, limit=longTP5, stop=longSL)
+
+if shortSignal
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short TP1", "Short", qty_percent=20, limit=shortTP1, stop=shortSL)
+    strategy.exit("Short TP2", "Short", qty_percent=20, limit=shortTP2, stop=shortSL)
+    strategy.exit("Short TP3", "Short", qty_percent=20, limit=shortTP3, stop=shortSL)
+    strategy.exit("Short TP4", "Short", qty_percent=20, limit=shortTP4, stop=shortSL)
+    strategy.exit("Short TP5", "Short", qty_percent=20, limit=shortTP5, stop=shortSL)
+
+// Drawings
+var line triggerLine = na
+var line slLine = na
+var line tp1Line = na
+var line tp2Line = na
+var line tp3Line = na
+var line tp4Line = na
+var line tp5Line = na
+
+var label triggerLabel = na
+var label slLabel = na
+var label tp1Label = na
+var label tp2Label = na
+var label tp3Label = na
+var label tp4Label = na
+var label tp5Label = na
+
+var string activeSide = ""
+var float activeSL = na
+var float activeTP1 = na
+var float activeTP2 = na
+var float activeTP3 = na
+var float activeTP4 = na
+var float activeTP5 = na
+var int activeEntryBar = na
+
+var bool tp1Booked = false
+var bool tp2Booked = false
+var bool tp3Booked = false
+var bool tp4Booked = false
+var bool tp5Booked = false
+var bool stopHit = false
+
+deleteAll() =>
+    line.delete(triggerLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    line.delete(tp4Line)
+    line.delete(tp5Line)
+    label.delete(triggerLabel)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+    label.delete(tp4Label)
+    label.delete(tp5Label)
+
+drawDotted(_price, _color) =>
+    line.new(bar_index, _price, bar_index + extendBars, _price,
+         color=_color, style=line.style_dotted, width=1)
+
+drawLabel(_price, _text, _bg, _txt) =>
+    label.new(bar_index + extendBars, _price, _text,
+         style=label.style_label_left, color=_bg, textcolor=_txt, size=size.small)
+
+// LONG setup
+if longSignal
+    deleteAll()
+
+    activeSide := "LONG"
+    activeSL := longSL
+    activeTP1 := longTP1
+    activeTP2 := longTP2
+    activeTP3 := longTP3
+    activeTP4 := longTP4
+    activeTP5 := longTP5
+    activeEntryBar := bar_index
+
+    tp1Booked := false
+    tp2Booked := false
+    tp3Booked := false
+    tp4Booked := false
+    tp5Booked := false
+    stopHit := false
+
+    triggerLine := line.new(bar_index, entry, bar_index + extendBars, entry,
+         color=color.green, width=2)
+
+    slLine := drawDotted(longSL, color.new(color.blue, 40))
+    tp1Line := drawDotted(longTP1, color.new(color.green, 65))
+    tp2Line := drawDotted(longTP2, color.new(color.green, 65))
+    tp3Line := drawDotted(longTP3, color.new(color.green, 65))
+    tp4Line := drawDotted(longTP4, color.new(color.green, 65))
+    tp5Line := drawDotted(longTP5, color.new(color.green, 65))
+
+    triggerLabel := drawLabel(entry, "▲ Strength Above " + str.tostring(entry, format.mintick) + ", Triggered", color.new(color.green, 88), color.green)
+    slLabel := drawLabel(longSL, "⚠ Stop at " + str.tostring(longSL, format.mintick), color.new(color.green, 88), color.blue)
+    tp1Label := drawLabel(longTP1, "▲ T1 at " + str.tostring(longTP1, format.mintick), color.new(color.green, 90), color.green)
+    tp2Label := drawLabel(longTP2, "▲ T2 at " + str.tostring(longTP2, format.mintick), color.new(color.green, 90), color.green)
+    tp3Label := drawLabel(longTP3, "▲ T3 at " + str.tostring(longTP3, format.mintick), color.new(color.green, 90), color.green)
+    tp4Label := drawLabel(longTP4, "▲ T4 at " + str.tostring(longTP4, format.mintick), color.new(color.green, 90), color.green)
+    tp5Label := drawLabel(longTP5, "▲ T5 at " + str.tostring(longTP5, format.mintick), color.new(color.green, 90), color.green)
+
+// SHORT setup
+if shortSignal
+    deleteAll()
+
+    activeSide := "SHORT"
+    activeSL := shortSL
+    activeTP1 := shortTP1
+    activeTP2 := shortTP2
+    activeTP3 := shortTP3
+    activeTP4 := shortTP4
+    activeTP5 := shortTP5
+    activeEntryBar := bar_index
+
+    tp1Booked := false
+    tp2Booked := false
+    tp3Booked := false
+    tp4Booked := false
+    tp5Booked := false
+    stopHit := false
+
+    triggerLine := line.new(bar_index, entry, bar_index + extendBars, entry,
+         color=color.red, width=2)
+
+    slLine := drawDotted(shortSL, color.new(color.blue, 40))
+    tp1Line := drawDotted(shortTP1, color.new(color.red, 65))
+    tp2Line := drawDotted(shortTP2, color.new(color.red, 65))
+    tp3Line := drawDotted(shortTP3, color.new(color.red, 65))
+    tp4Line := drawDotted(shortTP4, color.new(color.red, 65))
+    tp5Line := drawDotted(shortTP5, color.new(color.red, 65))
+
+    triggerLabel := drawLabel(entry, "▼ Weakness Below " + str.tostring(entry, format.mintick) + ", Triggered", color.new(color.orange, 88), color.red)
+    slLabel := drawLabel(shortSL, "⚠ Stop at " + str.tostring(shortSL, format.mintick), color.new(color.green, 88), color.blue)
+    tp1Label := drawLabel(shortTP1, "▼ T1 at " + str.tostring(shortTP1, format.mintick), color.new(color.orange, 90), color.red)
+    tp2Label := drawLabel(shortTP2, "▼ T2 at " + str.tostring(shortTP2, format.mintick), color.new(color.orange, 90), color.red)
+    tp3Label := drawLabel(shortTP3, "▼ T3 at " + str.tostring(shortTP3, format.mintick), color.new(color.orange, 90), color.red)
+    tp4Label := drawLabel(shortTP4, "▼ T4 at " + str.tostring(shortTP4, format.mintick), color.new(color.orange, 90), color.red)
+    tp5Label := drawLabel(shortTP5, "▼ T5 at " + str.tostring(shortTP5, format.mintick), color.new(color.orange, 90), color.red)
+
+// TP booked update on wick touch
+if activeSide == "SHORT" and not stopHit
+    if not tp1Booked and low <= activeTP1
+        tp1Booked := true
+        label.set_text(tp1Label, "▼ T1 at " + str.tostring(activeTP1, format.mintick) + " ✓Booked")
+    if not tp2Booked and low <= activeTP2
+        tp2Booked := true
+        label.set_text(tp2Label, "▼ T2 at " + str.tostring(activeTP2, format.mintick) + " ✓Booked")
+    if not tp3Booked and low <= activeTP3
+        tp3Booked := true
+        label.set_text(tp3Label, "▼ T3 at " + str.tostring(activeTP3, format.mintick) + " ✓Booked")
+    if not tp4Booked and low <= activeTP4
+        tp4Booked := true
+        label.set_text(tp4Label, "▼ T4 at " + str.tostring(activeTP4, format.mintick) + " ✓Booked")
+    if not tp5Booked and low <= activeTP5
+        tp5Booked := true
+        label.set_text(tp5Label, "▼ T5 at " + str.tostring(activeTP5, format.mintick) + " ✓Booked")
+
+if activeSide == "LONG" and not stopHit
+    if not tp1Booked and high >= activeTP1
+        tp1Booked := true
+        label.set_text(tp1Label, "▲ T1 at " + str.tostring(activeTP1, format.mintick) + " ✓Booked")
+    if not tp2Booked and high >= activeTP2
+        tp2Booked := true
+        label.set_text(tp2Label, "▲ T2 at " + str.tostring(activeTP2, format.mintick) + " ✓Booked")
+    if not tp3Booked and high >= activeTP3
+        tp3Booked := true
+        label.set_text(tp3Label, "▲ T3 at " + str.tostring(activeTP3, format.mintick) + " ✓Booked")
+    if not tp4Booked and high >= activeTP4
+        tp4Booked := true
+        label.set_text(tp4Label, "▲ T4 at " + str.tostring(activeTP4, format.mintick) + " ✓Booked")
+    if not tp5Booked and high >= activeTP5
+        tp5Booked := true
+        label.set_text(tp5Label, "▲ T5 at " + str.tostring(activeTP5, format.mintick) + " ✓Booked")
+
+// SL hit update on wick touch, after entry candle only
+canCheckStop = not na(activeEntryBar) and bar_index > activeEntryBar
+
+longStopHit = canCheckStop and activeSide == "LONG" and not stopHit and low <= activeSL
+shortStopHit = canCheckStop and activeSide == "SHORT" and not stopHit and high >= activeSL
+
+if longStopHit or shortStopHit
+    stopHit := true
+    label.delete(slLabel)
+
+    slLabel := label.new(bar_index + extendBars, activeSL,
+         "Stop Hit Looking for new entry",
+         style=label.style_label_left,
+         color=color.blue,
+         textcolor=color.white,
+         size=size.small)
+
+    line.set_color(slLine, color.blue)
+    line.set_width(slLine, 2)
+
+    activeSide := ""
+    activeEntryBar := na
+
+plotshape(longSignal, title="Buy Signal", style=shape.triangleup,
+     location=location.belowbar, color=color.new(color.green, 35), size=size.tiny)
+
+plotshape(shortSignal, title="Sell Signal", style=shape.triangledown,
+     location=location.abovebar, color=color.new(color.red, 35), size=size.tiny)
+
+alertcondition(longSignal, title="BUY Signal", message="BUY signal triggered")
+alertcondition(shortSignal, title="SELL Signal", message="SELL signal triggered")
+alertcondition(longStopHit or shortStopHit, title="Stop Hit", message="Stop Hit Looking for new entry")
