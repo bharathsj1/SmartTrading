@@ -852,7 +852,7 @@ i_lxLvlTP2   = input.float      (1.5,       'Level TP2'                     , gr
      tooltip =                   T_LVL)
 i_lxQtyTP2   = input.float      (30,        'Qty   TP2'                     , group = G_RISK,
      tooltip =                   T_QTY)
-i_lxLvlTP3   = input.float      (2,         'Level TP3'                     , group = G_RISK,
+i_lxLvlTP3   = input.float      (2,         'Runner Target'                 , group = G_RISK,
      tooltip =                   T_LVL)
 i_lxQtyTP3   = input.float      (30,        'Runner Qty'                    , group = G_RISK,
      tooltip =                   T_QTY)
@@ -1033,9 +1033,8 @@ else if tp1Done and condition[1] <= -1.0
 
 slLong      = f_cross(low,  slLine, false)
 slShort     = f_cross(high, slLine, true )
-//<TP1, TP2 & TP3>
+//<TP1, TP2 & runner>
 // % TP
-[tp3LinePct] = f_tp(condition, 1.2, leEntrySignal, seEntrySignal, i_src, i_lxLvlTP3, i_sxLvlTP3)
 [tp2LinePct] = f_tp(condition, 1.1, leEntrySignal, seEntrySignal, i_src, i_lxLvlTP2, i_sxLvlTP2)
 [tp1LinePct] = f_tp(condition, 1.0, leEntrySignal, seEntrySignal, i_src, i_lxLvlTP1, i_sxLvlTP1)
 
@@ -1044,12 +1043,10 @@ tp3LineAtr = condition >= 1.0 ? entryLine + atrTarget * tp3AtrMult : entryLine -
 tp2LineAtr = condition >= 1.0 ? entryLine + atrTarget * tp2AtrMult : entryLine - atrTarget * tp2AtrMult
 tp1LineAtr = condition >= 1.0 ? entryLine + atrTarget * tp1AtrMult : entryLine - atrTarget * tp1AtrMult
 
-tp3Line = useAtrTargets ? tp3LineAtr : tp3LinePct
+tp3Line = tp3LineAtr
 tp2Line = useAtrTargets ? tp2LineAtr : tp2LinePct
 tp1Line = useAtrTargets ? tp1LineAtr : tp1LinePct
 
-tp3Long      = f_cross(high, tp3Line, true )
-tp3Short     = f_cross(low,  tp3Line, false)
 tp2Long      = f_cross(high, tp2Line, true )
 tp2Short     = f_cross(low,  tp2Line, false)
 tp1Long      = f_cross(high, tp1Line, true )
@@ -1058,10 +1055,8 @@ tp1Short     = f_cross(low,  tp1Line, false)
 switch
     leEntrySignal => condition :=  1.0
     seEntrySignal => condition := -1.0
-    tp3Long   and condition[1] ==  1.2 => condition :=  0.0
-    tp3Short  and condition[1] == -1.2 => condition :=  0.0
-    tp2Long   and condition[1] ==  1.1 => condition :=  1.2
-    tp2Short  and condition[1] == -1.1 => condition := -1.2
+    tp2Long   and condition[1] ==  1.1 => condition :=  1.15
+    tp2Short  and condition[1] == -1.1 => condition := -1.15
     tp1Long   and condition[1] ==  1.0 => condition :=  1.1
     tp1Short  and condition[1] == -1.0 => condition := -1.1
     slLong    and condition[1] >=  1.0 => condition :=  0.0
@@ -1086,10 +1081,8 @@ longX        = lxTrigger and condition[1] >=  1.0 and condition ==  0.0
 shortX       = sxTrigger and condition[1] <= -1.0 and condition ==  0.0
 longSL       = slLong    and condition[1] >=  1.0 and condition ==  0.0
 shortSL      = slShort   and condition[1] <= -1.0 and condition ==  0.0
-longTP3      = tp3Long   and condition[1] ==  1.2 and condition ==  0.0
-shortTP3     = tp3Short  and condition[1] == -1.2 and condition ==  0.0
-longTP2      = tp2Long   and condition[1] ==  1.1 and condition ==  1.2
-shortTP2     = tp2Short  and condition[1] == -1.1 and condition == -1.2
+longTP2      = tp2Long   and condition[1] ==  1.1 and condition ==  1.15
+shortTP2     = tp2Short  and condition[1] == -1.1 and condition == -1.15
 longTP1      = tp1Long   and condition[1] ==  1.0 and condition ==  1.1
 shortTP1     = tp1Short  and condition[1] == -1.0 and condition == -1.1
 
@@ -1146,12 +1139,6 @@ if strategy.position_size > 0 and longTP2 and barstate.isconfirmed
       qty_percent      = tp2CloseQtyPct,
       alert_message    = lxMsgTP2Webhook,
       comment          = 'LXTP2')
-if strategy.position_size > 0 and longTP3 and barstate.isconfirmed
-    strategy.close(
-      'Long',
-      alert_message    = lxMsgTP3Webhook,
-      comment          = 'LXTP3')
-    tp1Done := false
 if strategy.position_size > 0 and longSL and barstate.isconfirmed
     strategy.close(
       'Long',
@@ -1186,12 +1173,6 @@ if strategy.position_size < 0 and shortTP2 and barstate.isconfirmed
       qty_percent      = tp2CloseQtyPct,
       alert_message    = sxMsgTP2Webhook,
       comment          = 'SXTP2')
-if strategy.position_size < 0 and shortTP3 and barstate.isconfirmed
-    strategy.close(
-      'Short',
-      alert_message    = sxMsgTP3Webhook,
-      comment          = 'SXTP3')
-    tp1Done := false
 if strategy.position_size < 0 and shortSL and barstate.isconfirmed
     strategy.close(
       'Short',
@@ -1233,9 +1214,9 @@ p_tp3Line    = plot (
   condition == -1.0 or
   condition ==  1.1 or
   condition == -1.1 or
-  condition ==  1.2 or
-  condition == -1.2 ? tp3Line : na,
-  title      = "TP Line 3",
+  condition ==  1.15 or
+  condition == -1.15 ? tp3Line : na,
+  title      = "Runner Guide",
   color      = c_tp,
   linewidth  = 1,
   style      = plot.style_linebr)
@@ -1251,8 +1232,8 @@ p_slLine     = plot (
   condition == -1.0 or
   condition ==  1.1 or
   condition == -1.1 or
-  condition ==  1.2 or
-  condition == -1.2 ? slLine : na,
+  condition ==  1.15 or
+  condition == -1.15 ? slLine : na,
   title      = "SL Line",
   color      = c_sl,
   linewidth  = 1,
@@ -1312,15 +1293,6 @@ plotshape(
   size       = size.tiny,
   location   = location.absolute)
 plotshape(
-  i_alertOn and (longTP3 or shortTP3) ? close : na,
-  title      = "TP3 Cross",
-  text       = "TP3",
-  textcolor  = color.white,
-  color      = color.olive,
-  style      = shape.labelup,
-  size       = size.tiny,
-  location   = location.absolute)
-plotshape(
   i_alertOn and (longSL or shortSL) ? close : na,
   title      = "SL Cross",
   text       = "SL",
@@ -1358,11 +1330,11 @@ f_qDq(_array, _val) =>
 
 var line[]  a_slLine     = array.new_line(1)
 var line[]  a_entryLine  = array.new_line(1)
-var line[]  a_tp3Line    = array.new_line(1)
+var line[]  a_runnerLine = array.new_line(1)
 var line[]  a_tp2Line    = array.new_line(1)
 var line[]  a_tp1Line    = array.new_line(1)
 var label[] a_slLabel    = array.new_label(1)
-var label[] a_tp3label   = array.new_label(1)
+var label[] a_runnerLabel = array.new_label(1)
 var label[] a_tp2label   = array.new_label(1)
 var label[] a_tp1label   = array.new_label(1)
 var label[] a_entryLabel = array.new_label(1)
@@ -1392,7 +1364,7 @@ line.delete(
    style = line.style_solid,
    color = color.blue)))
 line.delete(
-  f_qDq(a_tp3Line,
+  f_qDq(a_runnerLine,
   line.new(
    entryIndex,
    tp3Line,
@@ -1438,11 +1410,11 @@ label.delete(
    textcolor  = color.white,
    color = color.blue)))
 label.delete(
-  f_qDq(a_tp3label,
+  f_qDq(a_runnerLabel,
   label.new(
    last_bar_index + l_right,
    tp3Line,
-   'TP3: ' + str.tostring(tp3Line, '##.###'),
+   'Runner: ' + str.tostring(tp3Line, '##.###'),
    style = label.style_label_left,
    textcolor  = color.white,
    color = c_tp)))
