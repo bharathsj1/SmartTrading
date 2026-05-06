@@ -568,12 +568,10 @@ class CapitalTradingService:
     def _reason_based_close_percent(self, webhook: NormalizedWebhook) -> Optional[float]:
         reason = str(webhook.reason or webhook.comment or "").strip().upper()
         mapped = {
-            "LXTP1": 50.0,
-            "SXTP1": 50.0,
-            "LXTP2": 20.0,
-            "SXTP2": 20.0,
-            "LXTP3": 10.0,
-            "SXTP3": 10.0,
+            "LXTP1": 40.0,
+            "SXTP1": 40.0,
+            "LXTP2": 30.0,
+            "SXTP2": 30.0,
             "LX": 100.0,
             "SX": 100.0,
             "SL": 100.0,
@@ -594,7 +592,7 @@ class CapitalTradingService:
 
     def _uses_reason_based_staged_exit(self, webhook: NormalizedWebhook) -> bool:
         reason = str(webhook.reason or webhook.comment or "").strip().upper()
-        return reason in {"LXTP1", "SXTP1", "LXTP2", "SXTP2", "LXTP3", "SXTP3"}
+        return reason in {"LXTP1", "SXTP1", "LXTP2", "SXTP2"}
 
     def _extract_open_dealid_from_confirm(self, confirm: dict[str, Any]) -> str:
         for row in confirm.get("affectedDeals") or []:
@@ -1123,6 +1121,18 @@ class CapitalTradingService:
         else:
             result = {"ok": False, "error": "invalid_payload", "message": f"Unknown event: {event}"}
 
+        resolved_deal_id = ""
+        if event in open_events:
+            resolved_deal_id = str(
+                result.get("dealId")
+                or ((result.get("opened") or {}).get("dealId"))
+                or (((result.get("opened") or {}).get("confirm") or {}).get("dealId"))
+                or (((result.get("confirm") or {}).get("dealId")))
+                or ""
+            ).strip()
+        elif event in close_events:
+            resolved_deal_id = str(result.get("dealId") or deal_id or "").strip()
+
         log_event(
             self._logger,
             logging.INFO if result.get("ok") else logging.ERROR,
@@ -1130,6 +1140,7 @@ class CapitalTradingService:
             request_id=request_id,
             dedupe_key=dedupe_key,
             duration_ms=int((time.perf_counter() - started) * 1000),
+            deal_id=resolved_deal_id,
             result=mask_sensitive(result),
         )
         return result

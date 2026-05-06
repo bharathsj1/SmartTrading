@@ -846,7 +846,7 @@ O_SXMSGX     = 'Short Exit'
 // ——————————— <input>          |           |                               |                        Line length guide |
 i_lxLvlTP1   = input.float      (0.8,       'Level TP1'                     , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP1   = input.float      (50,        'Qty   TP1'                     , group = G_RISK,
+i_lxQtyTP1   = input.float      (40,        'Qty   TP1'                     , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlTP2   = input.float      (1.5,       'Level TP2'                     , group = G_RISK,
      tooltip =                   T_LVL)
@@ -854,7 +854,7 @@ i_lxQtyTP2   = input.float      (30,        'Qty   TP2'                     , gr
      tooltip =                   T_QTY)
 i_lxLvlTP3   = input.float      (2,         'Level TP3'                     , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP3   = input.float      (20,        'Runner Qty'                    , group = G_RISK,
+i_lxQtyTP3   = input.float      (30,        'Runner Qty'                    , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlSL    = input.float      (0.5,       'Stop Loss'                     , group = G_RISK,
      tooltip =                   T_LVL)
@@ -1078,7 +1078,7 @@ remainingAfterTp1Pct = math.max(0.0, 100.0 - tp1CloseQtyPct)
 tp2CloseQtyPct = remainingAfterTp1Pct > 0 ? math.min(100.0, tp2OriginalQtyPct / remainingAfterTp1Pct * 100.0) : 0.0
 tp1QtyWebhook = orderQty * tp1OriginalQtyPct / 100.0
 tp2QtyWebhook = orderQty * tp2OriginalQtyPct / 100.0
-tp3QtyWebhook = orderQty * tp3OriginalQtyPct / 100.0
+tp3QtyWebhook = 0.0
 
 longE        = leEntrySignal and condition ==  1.0
 shortE       = seEntrySignal and condition == -1.0
