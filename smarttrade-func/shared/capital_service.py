@@ -1123,11 +1123,18 @@ class CapitalTradingService:
 
         resolved_deal_id = ""
         if event in open_events:
+            opened = result.get("opened") or {}
+            confirm = opened.get("confirm") or result.get("confirm") or {}
+            for detail in confirm.get("affectedDeals") or []:
+                if str(detail.get("status") or "").strip().upper() in {"OPEN", "OPENED"}:
+                    resolved_deal_id = str(detail.get("dealId") or "").strip()
+                    if resolved_deal_id:
+                        break
             resolved_deal_id = str(
-                result.get("dealId")
-                or ((result.get("opened") or {}).get("dealId"))
-                or (((result.get("opened") or {}).get("confirm") or {}).get("dealId"))
-                or (((result.get("confirm") or {}).get("dealId")))
+                resolved_deal_id
+                or opened.get("dealId")
+                or confirm.get("dealId")
+                or result.get("dealId")
                 or ""
             ).strip()
         elif event in close_events:

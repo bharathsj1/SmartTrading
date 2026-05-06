@@ -99,11 +99,17 @@ def _payload_with_deal_id(webhook: NormalizedWebhook, deal_id: str) -> Normalize
 
 
 def _extract_opened_deal_id(result: dict[str, Any]) -> str:
-    direct = str(result.get("dealId") or "").strip()
+    opened = result.get("opened") or {}
+    confirm = opened.get("confirm") or result.get("confirm") or {}
+    for detail in confirm.get("affectedDeals") or []:
+        if str(detail.get("status") or "").strip().upper() in {"OPEN", "OPENED"}:
+            deal_id = str(detail.get("dealId") or "").strip()
+            if deal_id:
+                return deal_id
+    direct = str(opened.get("dealId") or result.get("dealId") or "").strip()
     if direct:
         return direct
-    opened = result.get("opened") or {}
-    return str(opened.get("dealId") or "").strip()
+    return str(confirm.get("dealId") or "").strip()
 
 
 def _extract_opened_epic(result: dict[str, Any]) -> str:
