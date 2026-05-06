@@ -592,7 +592,7 @@ class CapitalTradingService:
 
     def _uses_reason_based_staged_exit(self, webhook: NormalizedWebhook) -> bool:
         reason = str(webhook.reason or webhook.comment or "").strip().upper()
-        return reason in {"LXTP1", "SXTP1", "LXTP2", "SXTP2"}
+        return reason in {"LXTP1", "SXTP1", "LXTP2", "SXTP2", "LX", "SX", "SL"}
 
     def _extract_open_dealid_from_confirm(self, confirm: dict[str, Any]) -> str:
         for row in confirm.get("affectedDeals") or []:
