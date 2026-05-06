@@ -570,8 +570,8 @@ class CapitalTradingService:
         mapped = {
             "LXTP1": 40.0,
             "SXTP1": 40.0,
-            "LXTP2": 30.0,
-            "SXTP2": 30.0,
+            "LXTP2": 50.0,
+            "SXTP2": 50.0,
             "LX": 100.0,
             "SX": 100.0,
             "SL": 100.0,
