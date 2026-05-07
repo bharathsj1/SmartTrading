@@ -504,8 +504,6 @@ class CapitalTradingService:
             if normalized_side and direction != normalized_side:
                 continue
             current_deal_id = str(row.get("dealId") or position.get("dealId") or "").strip()
-            if deal_id and current_deal_id != str(deal_id).strip():
-                continue
             return {
                 "dealId": current_deal_id,
                 "direction": direction,
@@ -912,6 +910,26 @@ class CapitalTradingService:
                         ],
                     }
                 except Exception as exc:
+                    fallback_position = self._find_position(epic=resolved_epic, side=side, deal_id="")
+                    fallback_deal_id = str((fallback_position or {}).get("dealId") or "").strip()
+                    if fallback_deal_id and fallback_deal_id != str(deal_id).strip():
+                        try:
+                            self._request("DELETE", f"/api/v1/positions/{fallback_deal_id}")
+                            return {
+                                "ok": True,
+                                "message": "Position close request sent.",
+                                "closed_deals": [fallback_deal_id],
+                                "details": [
+                                    {
+                                        "dealId": fallback_deal_id,
+                                        "mode": "full",
+                                        "closed_size": self._safe_float((fallback_position or {}).get("size")),
+                                        "remaining_size": 0.0,
+                                    }
+                                ],
+                            }
+                        except Exception:
+                            pass
                     return {"ok": False, "error": "close_failed", "message": self._clean_message(str(exc))}
 
             targets: List[str] = []

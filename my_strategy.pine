@@ -29,10 +29,10 @@ G_SCRIPT01   = '■ ' + 'SAIYAN OCC'
 
 // === INPUTS ===
 res                       = input.timeframe('15',  'TIMEFRAME', group ="NON REPAINT")
-useRes                    = input(true,            'Use Alternate Signals')
-intRes                    = input(8,               'Multiplier for Alernate Signals')
+useRes                    = input(false,           'Use Alternate Signals')
+intRes                    = input(3,               'Multiplier for Alernate Signals')
 basisType                 = input.string('ALMA',   'MA Type: ', options=['TEMA', 'HullMA', 'ALMA'])
-basisLen                  = input.int(2,           'MA Period', minval=1)
+basisLen                  = input.int(4,           'MA Period', minval=1)
 offsetSigma               = input.int(5,           'Offset for LSMA / Sigma for ALMA', minval=0)
 offsetALMA                = input.float(0.85,      'Offset for ALMA', minval=0, step=0.01)
 scolor                    = input(false,           'Show coloured Bars to indicate Trend?')
@@ -683,8 +683,6 @@ dClose    = securityNoRep(syminfo.tickerid, "D", close[1])
 ema = ta.ema(close, 144)
 emaBull = close > ema
 trendEma = ta.ema(close, 200)
-allowLongTrend = close > trendEma
-allowShortTrend = close < trendEma
 equal_tf(res) => str.tonumber(res) == f_chartTfInMinutes() and not timeframe.isseconds
 higher_tf(res) => str.tonumber(res) > f_chartTfInMinutes() or timeframe.isseconds
 too_small_tf(res) => (timeframe.isweekly and res=="1") or (timeframe.ismonthly and str.tonumber(res) < 10)
@@ -864,10 +862,10 @@ useAtrTargets = input.bool(true, "Use ATR based TP/SL", group = G_RISK)
 
 atrTargetLen = input.int(14, "ATR Length", group = G_RISK)
 
-slAtrMult  = input.float(1.3, "SL ATR Multiplier", step = 0.1, group = G_RISK)
-tp1AtrMult = input.float(1.0, "TP1 ATR Multiplier", step = 0.1, group = G_RISK)
-tp2AtrMult = input.float(2.0, "TP2 ATR Multiplier", step = 0.1, group = G_RISK)
-tp3AtrMult = input.float(3.0, "TP3 ATR Multiplier", step = 0.1, group = G_RISK)
+slAtrMult  = input.float(1.8, "SL ATR Multiplier", step = 0.1, group = G_RISK)
+tp1AtrMult = input.float(1.2, "TP1 ATR Multiplier", step = 0.1, group = G_RISK)
+tp2AtrMult = input.float(2.4, "TP2 ATR Multiplier", step = 0.1, group = G_RISK)
+tp3AtrMult = input.float(3.6, "TP3 ATR Multiplier", step = 0.1, group = G_RISK)
 
 atrTarget = ta.atr(atrTargetLen)
 
@@ -916,20 +914,27 @@ f_json_str(_s) =>
 f_json_num(_n) =>
     str.tostring(_n)
 
-f_side_norm(_side) =>
+f_order_side(_event, _side) =>
+    _eventLower = str.lower(_event)
     _sideLower = str.lower(_side)
     _result = _sideLower
-    if _sideLower == 'long'
-        _result := 'buy'
-    else if _sideLower == 'short'
-        _result := 'sell'
+    if _eventLower == 'entry'
+        if _sideLower == 'long'
+            _result := 'buy'
+        else if _sideLower == 'short'
+            _result := 'sell'
+    else
+        if _sideLower == 'long'
+            _result := 'sell'
+        else if _sideLower == 'short'
+            _result := 'buy'
     _result
 
 f_event_json(_event, _side, _reason, _setup, _regime, _qty, _price, _sl, _tp1, _tp2, _tp3) =>
     _json = "{"
     _json := _json + '"secret":' + f_json_str(tvSecret) + ","
     _json := _json + '"event":' + f_json_str(_event) + ","
-    _json := _json + '"side":' + f_json_str(f_side_norm(_side)) + ","
+    _json := _json + '"side":' + f_json_str(f_order_side(_event, _side)) + ","
     _json := _json + '"instrument":' + f_json_str(instrumentKey) + ","
     _json := _json + '"ticker":' + (sendSymbolId ? f_json_str(syminfo.tickerid) : f_json_str("")) + ","
     _json := _json + '"exchange":' + f_json_str(syminfo.prefix) + ","
@@ -988,25 +993,59 @@ var float slLine    = 0.0
 var float entryLine = 0.0
 var bool  tp1Done   = false
 
-cooldownBars = input.int(3, 'Cooldown Bars', minval = 0, group = G_RISK)
+cooldownBars = input.int(1, 'Cooldown Bars', minval = 0, group = G_RISK)
+maxConsecutiveSL = input.int(2, 'Max Consecutive SL', minval = 1, group = G_RISK)
+lossPauseBars = input.int(12, 'Pause Bars After Loss Streak', minval = 0, group = G_RISK)
 var int lastTradeBar = na
-canTrade = na(lastTradeBar) or (bar_index - lastTradeBar > cooldownBars)
+var int consecutiveSL = 0
+var int lastLossPauseBar = na
+closedTradeNowRisk = ta.change(strategy.closedtrades) > 0
+lastExitCommentRisk = closedTradeNowRisk ? strategy.closedtrades.exit_comment(strategy.closedtrades - 1) : ''
+if closedTradeNowRisk
+    consecutiveSL := lastExitCommentRisk == 'SL' ? consecutiveSL + 1 : 0
+    if consecutiveSL >= maxConsecutiveSL
+        lastLossPauseBar := bar_index
+        consecutiveSL := 0
+baseCooldownDone = na(lastTradeBar) or (bar_index - lastTradeBar > cooldownBars)
+lossPauseDone = na(lastLossPauseBar) or (bar_index - lastLossPauseBar > lossPauseBars)
+canTrade = baseCooldownDone and lossPauseDone
 
-slopeLookback   = input.int(3, 'Slope Lookback', minval = 1, group = G_RISK)
-minSlope        = input.float(0.5, 'Min Slope', step = 0.1, group = G_RISK)
+slopeLookback   = input.int(2, 'Slope Lookback', minval = 1, group = G_RISK)
+minSlope        = input.float(0.2, 'Min Slope', step = 0.1, group = G_RISK)
 maSlope         = closeSeriesAlt - closeSeriesAlt[slopeLookback]
 allowLongSlope  = maSlope > minSlope
 allowShortSlope = maSlope < -minSlope
 
 atrFastLen = input.int(14, 'ATR Fast Length', minval = 1, group = G_RISK)
-atrSlowLen = input.int(50, 'ATR Slow Length', minval = 2, group = G_RISK)
+atrSlowLen = input.int(34, 'ATR Slow Length', minval = 2, group = G_RISK)
 atrFast = ta.atr(atrFastLen)
 atrSlow = ta.sma(atrFast, atrSlowLen)
-volatilityOK = atrFast > atrSlow * 0.9
+volatilityOK = atrFast > atrSlow * 0.8
+useAdxFilter = input.bool(true, 'Use ADX Filter', group = G_RISK)
+adxLen = input.int(14, 'ADX Length', minval = 1, group = G_RISK)
+minAdx = input.float(20.0, 'Min ADX', minval = 0.0, step = 0.5, group = G_RISK)
+[_, _, adxValue] = ta.dmi(adxLen, adxLen)
+trendStrengthOK = not useAdxFilter or adxValue >= minAdx
+trendFilterAtrLen = input.int(14, 'Trend Filter ATR Length', minval = 1, group = G_RISK)
+trendFilterAtrMult = input.float(0.5, 'Trend Filter ATR Distance', minval = 0.0, step = 0.1, group = G_RISK)
+trendFilterAtr = ta.atr(trendFilterAtrLen)
+allowLongTrend = close > trendEma + trendFilterAtr * trendFilterAtrMult
+allowShortTrend = close < trendEma - trendFilterAtr * trendFilterAtrMult
+useSpikeFilter = input.bool(true, 'Use Spike Filter', group = G_RISK)
+maxEntryBarAtr = input.float(1.8, 'Max Entry Bar ATR', minval = 0.1, step = 0.1, group = G_RISK)
+postSpikePauseBars = input.int(2, 'Pause Bars After Spike', minval = 0, group = G_RISK)
+barRange = high - low
+barSpike = barRange > atrFast * maxEntryBarAtr
+recentSpike = ta.barssince(barSpike) <= postSpikePauseBars
+spikeFilterOK = not useSpikeFilter or (not barSpike and not recentSpike)
+useSeparationFilter = input.bool(true, 'Use MA Separation Filter', group = G_RISK)
+minSeparationAtr = input.float(0.15, 'Min MA Separation ATR', minval = 0.0, step = 0.05, group = G_RISK)
+maSeparation = math.abs(closeSeriesAlt - openSeriesAlt)
+separationOK = not useSeparationFilter or maSeparation >= atrFast * minSeparationAtr
 allowLongTradeType  = tradeType == 'LONG' or tradeType == 'BOTH'
 allowShortTradeType = tradeType == 'SHORT' or tradeType == 'BOTH'
-longSignalAllowed   = allowLongTradeType and allowLongTrend and allowLongSlope and volatilityOK and canTrade
-shortSignalAllowed  = allowShortTradeType and allowShortTrend and allowShortSlope and volatilityOK and canTrade
+longSignalAllowed   = allowLongTradeType and allowLongTrend and allowLongSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and canTrade
+shortSignalAllowed  = allowShortTradeType and allowShortTrend and allowShortSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and canTrade
 leEntrySignal = leTrigger and longSignalAllowed and condition[1] <= 0.0
 seEntrySignal = seTrigger and shortSignalAllowed and condition[1] >= 0.0
 
@@ -1031,10 +1070,11 @@ if tp1Done and condition[1] >= 1.0
 else if tp1Done and condition[1] <= -1.0
     slLine := math.min(slLine, entryLine)
 
-slLong      = f_cross(low,  slLine, false)
-slShort     = f_cross(high, slLine, true )
-//<TP1, TP2 & runner>
+slLong      = low <= slLine
+slShort     = high >= slLine
+//<TP1, TP2 & TP3>
 // % TP
+[tp3LinePct] = f_tp(condition, 1.2, leEntrySignal, seEntrySignal, i_src, i_lxLvlTP3, i_sxLvlTP3)
 [tp2LinePct] = f_tp(condition, 1.1, leEntrySignal, seEntrySignal, i_src, i_lxLvlTP2, i_sxLvlTP2)
 [tp1LinePct] = f_tp(condition, 1.0, leEntrySignal, seEntrySignal, i_src, i_lxLvlTP1, i_sxLvlTP1)
 
@@ -1043,24 +1083,28 @@ tp3LineAtr = condition >= 1.0 ? entryLine + atrTarget * tp3AtrMult : entryLine -
 tp2LineAtr = condition >= 1.0 ? entryLine + atrTarget * tp2AtrMult : entryLine - atrTarget * tp2AtrMult
 tp1LineAtr = condition >= 1.0 ? entryLine + atrTarget * tp1AtrMult : entryLine - atrTarget * tp1AtrMult
 
-tp3Line = tp3LineAtr
+tp3Line = useAtrTargets ? tp3LineAtr : tp3LinePct
 tp2Line = useAtrTargets ? tp2LineAtr : tp2LinePct
 tp1Line = useAtrTargets ? tp1LineAtr : tp1LinePct
 
-tp2Long      = f_cross(high, tp2Line, true )
-tp2Short     = f_cross(low,  tp2Line, false)
-tp1Long      = f_cross(high, tp1Line, true )
-tp1Short     = f_cross(low,  tp1Line, false)
+tp3Long      = high >= tp3Line
+tp3Short     = low <= tp3Line
+tp2Long      = high >= tp2Line
+tp2Short     = low <= tp2Line
+tp1Long      = high >= tp1Line
+tp1Short     = low <= tp1Line
 
 switch
     leEntrySignal => condition :=  1.0
     seEntrySignal => condition := -1.0
-    tp2Long   and condition[1] ==  1.1 => condition :=  1.15
-    tp2Short  and condition[1] == -1.1 => condition := -1.15
-    tp1Long   and condition[1] ==  1.0 => condition :=  1.1
-    tp1Short  and condition[1] == -1.0 => condition := -1.1
     slLong    and condition[1] >=  1.0 => condition :=  0.0
     slShort   and condition[1] <= -1.0 => condition :=  0.0
+    tp3Long   and condition[1] ==  1.2 => condition :=  0.0
+    tp3Short  and condition[1] == -1.2 => condition :=  0.0
+    tp2Long   and condition[1] ==  1.1 => condition :=  1.2
+    tp2Short  and condition[1] == -1.1 => condition := -1.2
+    tp1Long   and condition[1] ==  1.0 => condition :=  1.1
+    tp1Short  and condition[1] == -1.0 => condition := -1.1
     lxTrigger and condition[1] >=  1.0 => condition :=  0.0
     sxTrigger and condition[1] <= -1.0 => condition :=  0.0
 
@@ -1073,7 +1117,7 @@ remainingAfterTp1Pct = math.max(0.0, 100.0 - tp1CloseQtyPct)
 tp2CloseQtyPct = remainingAfterTp1Pct > 0 ? math.min(100.0, tp2OriginalQtyPct / remainingAfterTp1Pct * 100.0) : 0.0
 tp1QtyWebhook = orderQty * tp1OriginalQtyPct / 100.0
 tp2QtyWebhook = orderQty * tp2OriginalQtyPct / 100.0
-tp3QtyWebhook = 0.0
+tp3QtyWebhook = orderQty * tp3OriginalQtyPct / 100.0
 
 longE        = leEntrySignal and condition ==  1.0
 shortE       = seEntrySignal and condition == -1.0
@@ -1081,10 +1125,12 @@ longX        = lxTrigger and condition[1] >=  1.0 and condition ==  0.0
 shortX       = sxTrigger and condition[1] <= -1.0 and condition ==  0.0
 longSL       = slLong    and condition[1] >=  1.0 and condition ==  0.0
 shortSL      = slShort   and condition[1] <= -1.0 and condition ==  0.0
-longTP2      = tp2Long   and condition[1] ==  1.1 and condition ==  1.15
-shortTP2     = tp2Short  and condition[1] == -1.1 and condition == -1.15
-longTP1      = tp1Long   and condition[1] ==  1.0 and condition ==  1.1
-shortTP1     = tp1Short  and condition[1] == -1.0 and condition == -1.1
+longTP3      = tp3Long   and condition[1] ==  1.2 and condition ==  0.0 and not slLong
+shortTP3     = tp3Short  and condition[1] == -1.2 and condition ==  0.0 and not slShort
+longTP2      = tp2Long   and condition[1] ==  1.1 and condition ==  1.2 and not slLong
+shortTP2     = tp2Short  and condition[1] == -1.1 and condition == -1.2 and not slShort
+longTP1      = tp1Long   and condition[1] ==  1.0 and condition ==  1.1 and not slLong
+shortTP1     = tp1Short  and condition[1] == -1.0 and condition == -1.1 and not slShort
 
 // Build webhook SL/TP explicitly from trade side so entry alerts never inherit
 // the wrong direction from transient state on the signal bar.
@@ -1115,10 +1161,23 @@ sxMsgTP2Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP2', 'MA_CROSS', 't
 sxMsgTP3Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP3', 'MA_CROSS', 'trend', tp3QtyWebhook, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP3
 sxMsgWebhook    = useWebhookJson ? f_close_json('short', 'SX'   , 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsg
 
+fireLongEntry  = strategy.position_size <= 0 and longE and barstate.isconfirmed
+fireLongTP1    = strategy.position_size > 0 and longTP1 and barstate.isconfirmed
+fireLongTP2    = strategy.position_size > 0 and longTP2 and barstate.isconfirmed
+fireLongTP3    = strategy.position_size > 0 and longTP3 and barstate.isconfirmed
+fireLongSL     = strategy.position_size > 0 and longSL and barstate.isconfirmed
+fireLongClose  = strategy.position_size > 0 and longX and barstate.isconfirmed
+fireShortEntry = strategy.position_size >= 0 and shortE and barstate.isconfirmed
+fireShortTP1   = strategy.position_size < 0 and shortTP1 and barstate.isconfirmed
+fireShortTP2   = strategy.position_size < 0 and shortTP2 and barstate.isconfirmed
+fireShortTP3   = strategy.position_size < 0 and shortTP3 and barstate.isconfirmed
+fireShortSL    = strategy.position_size < 0 and shortSL and barstate.isconfirmed
+fireShortClose = strategy.position_size < 0 and shortX and barstate.isconfirmed
+ 
 
 // ——————————— <strategy_calls> {
 //<long orders>
-if strategy.position_size <= 0 and longE and barstate.isconfirmed
+if fireLongEntry
     strategy.entry(
       'Long',
       strategy.long,
@@ -1126,33 +1185,33 @@ if strategy.position_size <= 0 and longE and barstate.isconfirmed
       comment          = 'LE')
     lastTradeBar := bar_index
     tp1Done := false
-if strategy.position_size > 0 and longTP1 and barstate.isconfirmed
+if fireLongTP1
     strategy.close(
       'Long',
       qty_percent      = tp1CloseQtyPct,
       alert_message    = lxMsgTP1Webhook,
       comment          = 'LXTP1')
     tp1Done := true
-if strategy.position_size > 0 and longTP2 and barstate.isconfirmed
+if fireLongTP2
     strategy.close(
       'Long',
       qty_percent      = tp2CloseQtyPct,
       alert_message    = lxMsgTP2Webhook,
       comment          = 'LXTP2')
-if strategy.position_size > 0 and longSL and barstate.isconfirmed
+if fireLongTP3
     strategy.close(
       'Long',
-      alert_message    = lxMsgSLWebhook,
-      comment          = 'SL')
+      alert_message    = lxMsgWebhook,
+      comment          = 'LXTP3')
     tp1Done := false
-if strategy.position_size > 0 and longX and barstate.isconfirmed
+if fireLongClose
     strategy.close(
       'Long',
       alert_message    = lxMsgWebhook,
       comment          = 'LX')
     tp1Done := false
 //<short orders>
-if strategy.position_size >= 0 and shortE and barstate.isconfirmed
+if fireShortEntry
     strategy.entry(
       'Short',
       strategy.short,
@@ -1160,31 +1219,51 @@ if strategy.position_size >= 0 and shortE and barstate.isconfirmed
       comment          = 'SE')
     lastTradeBar := bar_index
     tp1Done := false
-if strategy.position_size < 0 and shortTP1 and barstate.isconfirmed
+if fireShortTP1
     strategy.close(
       'Short',
       qty_percent      = tp1CloseQtyPct,
       alert_message    = sxMsgTP1Webhook,
       comment          = 'SXTP1')
     tp1Done := true
-if strategy.position_size < 0 and shortTP2 and barstate.isconfirmed
+if fireShortTP2
     strategy.close(
       'Short',
       qty_percent      = tp2CloseQtyPct,
       alert_message    = sxMsgTP2Webhook,
       comment          = 'SXTP2')
-if strategy.position_size < 0 and shortSL and barstate.isconfirmed
+if fireShortTP3
     strategy.close(
       'Short',
-      alert_message    = sxMsgSLWebhook,
-      comment          = 'SL')
+      alert_message    = sxMsgWebhook,
+      comment          = 'SXTP3')
     tp1Done := false
-if strategy.position_size < 0 and shortX and barstate.isconfirmed
+if fireShortClose
     strategy.close(
       'Short',
       alert_message    = sxMsgWebhook,
       comment          = 'SX')
     tp1Done := false
+
+if strategy.position_size > 0
+    strategy.exit(
+      'Long-SL',
+      from_entry       = 'Long',
+      stop             = slLine,
+      alert_message    = lxMsgSLWebhook,
+      comment          = 'SL')
+else
+    strategy.cancel('Long-SL')
+
+if strategy.position_size < 0
+    strategy.exit(
+      'Short-SL',
+      from_entry       = 'Short',
+      stop             = slLine,
+      alert_message    = sxMsgSLWebhook,
+      comment          = 'SL')
+else
+    strategy.cancel('Short-SL')
 
 // ——————————— <visuals>
 c_tp         = leTrigger or seTrigger ? na :
@@ -1193,6 +1272,25 @@ c_entry      = leTrigger or seTrigger ? na :
                condition == 0.0       ? na : color.blue
 c_sl         = leTrigger or seTrigger ? na :
                condition == 0.0       ? na : color.red
+closedTradeNow   = ta.change(strategy.closedtrades) > 0
+lastExitComment  = closedTradeNow ? strategy.closedtrades.exit_comment(strategy.closedtrades - 1) : ''
+lastEntryId      = closedTradeNow ? strategy.closedtrades.entry_id(strategy.closedtrades - 1) : ''
+plotLongStopFill = closedTradeNow and lastExitComment == 'SL' and lastEntryId == 'Long'
+plotShortStopFill = closedTradeNow and lastExitComment == 'SL' and lastEntryId == 'Short'
+if plotLongStopFill or plotShortStopFill
+    tp1Done := false
+plotLongEntry  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+plotShortEntry = strategy.position_size < 0 and strategy.position_size[1] >= 0
+plotLongClose  = closedTradeNow and lastEntryId == 'Long' and lastExitComment == 'LX'
+plotShortClose = closedTradeNow and lastEntryId == 'Short' and lastExitComment == 'SX'
+plotLongTP1    = fireLongTP1
+plotShortTP1   = fireShortTP1
+plotLongTP2    = fireLongTP2
+plotShortTP2   = fireShortTP2
+plotLongTP3    = fireLongTP3
+plotShortTP3   = fireShortTP3
+plotLongSL     = plotLongStopFill
+plotShortSL    = plotShortStopFill
 p_tp1Line    = plot (
   condition ==  1.0 or
   condition == -1.0 ? tp1Line : na,
@@ -1214,9 +1312,9 @@ p_tp3Line    = plot (
   condition == -1.0 or
   condition ==  1.1 or
   condition == -1.1 or
-  condition ==  1.15 or
-  condition == -1.15 ? tp3Line : na,
-  title      = "Runner Guide",
+  condition ==  1.2 or
+  condition == -1.2 ? tp3Line : na,
+  title      = "TP Line 3",
   color      = c_tp,
   linewidth  = 1,
   style      = plot.style_linebr)
@@ -1232,8 +1330,8 @@ p_slLine     = plot (
   condition == -1.0 or
   condition ==  1.1 or
   condition == -1.1 or
-  condition ==  1.15 or
-  condition == -1.15 ? slLine : na,
+  condition ==  1.2 or
+  condition == -1.2 ? slLine : na,
   title      = "SL Line",
   color      = c_sl,
   linewidth  = 1,
@@ -1247,7 +1345,7 @@ fill(
 
 //<alerts labels>
 plotshape(
-  i_alertOn and longE,
+  i_alertOn and plotLongEntry,
   title      = 'Long',
   text       = 'Long',
   textcolor  = color.white,
@@ -1256,7 +1354,7 @@ plotshape(
   size       = size.tiny,
   location   = location.belowbar)
 plotshape(
-  i_alertOn and shortE,
+  i_alertOn and plotShortEntry,
   title      = 'Short',
   text       = 'Short',
   textcolor  = color.white,
@@ -1265,7 +1363,7 @@ plotshape(
   size       = size.tiny,
   location   = location.abovebar)
 plotshape(
-  i_alertOn and (longX or shortX) ? close : na,
+  i_alertOn and (plotLongClose or plotShortClose) ? close : na,
   title      = 'Close',
   text       = 'Close',
   textcolor  = color.white,
@@ -1273,7 +1371,7 @@ plotshape(
   style      = shape.labelup,
   size       = size.tiny,
   location   = location.absolute)
-l_tp         = i_alertOn and (longTP1 or shortTP1) ? close : na
+l_tp         = i_alertOn and (plotLongTP1 or plotShortTP1) ? tp1Line : na
 plotshape(
   l_tp,
   title      = "TP1 Cross",
@@ -1284,7 +1382,7 @@ plotshape(
   size       = size.tiny,
   location   = location.absolute)
 plotshape(
-  i_alertOn and (longTP2 or shortTP2) ? close : na,
+  i_alertOn and (plotLongTP2 or plotShortTP2) ? tp2Line : na,
   title      = "TP2 Cross",
   text       = "TP2",
   textcolor  = color.white,
@@ -1293,7 +1391,16 @@ plotshape(
   size       = size.tiny,
   location   = location.absolute)
 plotshape(
-  i_alertOn and (longSL or shortSL) ? close : na,
+  i_alertOn and (plotLongTP3 or plotShortTP3) ? tp3Line : na,
+  title      = "TP3 Cross",
+  text       = "TP3",
+  textcolor  = color.white,
+  color      = color.olive,
+  style      = shape.labelup,
+  size       = size.tiny,
+  location   = location.absolute)
+plotshape(
+  i_alertOn and (plotLongSL or plotShortSL) ? slLine : na,
   title      = "SL Cross",
   text       = "SL",
   textcolor  = color.white,
@@ -1330,25 +1437,26 @@ f_qDq(_array, _val) =>
 
 var line[]  a_slLine     = array.new_line(1)
 var line[]  a_entryLine  = array.new_line(1)
-var line[]  a_runnerLine = array.new_line(1)
+var line[]  a_tp3Line    = array.new_line(1)
 var line[]  a_tp2Line    = array.new_line(1)
 var line[]  a_tp1Line    = array.new_line(1)
 var label[] a_slLabel    = array.new_label(1)
-var label[] a_runnerLabel = array.new_label(1)
+var label[] a_tp3label   = array.new_label(1)
 var label[] a_tp2label   = array.new_label(1)
 var label[] a_tp1label   = array.new_label(1)
 var label[] a_entryLabel = array.new_label(1)
 
 newEntry     = longE or shortE
-entryIndex   = 1
-entryIndex  := newEntry ? bar_index : nz(entryIndex[1])
-lasTrade     = bar_index >= entryIndex
+var int entryIndex = na
+entryIndex  := newEntry ? bar_index : nz(entryIndex[1], bar_index)
+safeEntryIndex = math.max(entryIndex, bar_index - 5000)
+lasTrade     = bar_index >= safeEntryIndex
 l_right      = 10
 
 line.delete(
   f_qDq(a_slLine,
   line.new(
-   entryIndex,
+   safeEntryIndex,
    slLine,
    last_bar_index + l_right,
    slLine,
@@ -1357,16 +1465,16 @@ line.delete(
 line.delete(
   f_qDq(a_entryLine,
   line.new(
-   entryIndex,
+   safeEntryIndex,
    entryLine,
    last_bar_index + l_right,
    entryLine,
    style = line.style_solid,
    color = color.blue)))
 line.delete(
-  f_qDq(a_runnerLine,
+  f_qDq(a_tp3Line,
   line.new(
-   entryIndex,
+   safeEntryIndex,
    tp3Line,
    last_bar_index + l_right,
    tp3Line,
@@ -1375,7 +1483,7 @@ line.delete(
 line.delete(
   f_qDq(a_tp2Line,
   line.new(
-   entryIndex,
+   safeEntryIndex,
    tp2Line,
    last_bar_index + l_right,
    tp2Line,
@@ -1384,7 +1492,7 @@ line.delete(
 line.delete(
   f_qDq(a_tp1Line,
   line.new(
-   entryIndex,
+   safeEntryIndex,
    tp1Line,
    last_bar_index + l_right,
    tp1Line,
@@ -1410,11 +1518,11 @@ label.delete(
    textcolor  = color.white,
    color = color.blue)))
 label.delete(
-  f_qDq(a_runnerLabel,
+  f_qDq(a_tp3label,
   label.new(
    last_bar_index + l_right,
    tp3Line,
-   'Runner: ' + str.tostring(tp3Line, '##.###'),
+   'TP3: ' + str.tostring(tp3Line, '##.###'),
    style = label.style_label_left,
    textcolor  = color.white,
    color = c_tp)))
@@ -1444,18 +1552,5 @@ label.delete(
 c_barCol = close > open ? color.rgb(120, 9, 139) : color.rgb(69, 155, 225)
 barcolor(
   i_barColOn ? c_barCol : na)
-
-// ——————————— <alerts>
-//<any_alert_function_call>
-if longE or shortE or longX or shortX
-    alert(message = 'Any Alert',   freq = alert.freq_once_per_bar_close)
-if longE
-    alert(message = 'Long Entry',  freq = alert.freq_once_per_bar_close)
-if shortE
-    alert(message = 'Short Entry', freq = alert.freq_once_per_bar_close)
-if longX
-    alert(message = 'Long Exit',   freq = alert.freq_once_per_bar_close)
-if shortX
-    alert(message = 'Short Exit',  freq = alert.freq_once_per_bar_close)
 //#endregion }
 // ——————————— <↑↑↑ G_SCRIPT03 ↑↑↑>
