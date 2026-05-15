@@ -90,28 +90,6 @@ def _active_trade_key_for_webhook(webhook: NormalizedWebhook) -> str:
     )
 
 
-def _payload_with_deal_id(webhook: NormalizedWebhook, deal_id: str) -> NormalizedWebhook:
-    if not deal_id or webhook.deal_id:
-        return webhook
-    payload = dict(webhook.raw)
-    payload["deal_id"] = deal_id
-    return NormalizedWebhook.from_dict(payload)
-
-
-def _extract_opened_deal_id(result: dict[str, Any]) -> str:
-    opened = result.get("opened") or {}
-    confirm = opened.get("confirm") or result.get("confirm") or {}
-    for detail in confirm.get("affectedDeals") or []:
-        if str(detail.get("status") or "").strip().upper() in {"OPEN", "OPENED"}:
-            deal_id = str(detail.get("dealId") or "").strip()
-            if deal_id:
-                return deal_id
-    direct = str(opened.get("dealId") or result.get("dealId") or "").strip()
-    if direct:
-        return direct
-    return str(confirm.get("dealId") or "").strip()
-
-
 def _extract_opened_epic(result: dict[str, Any]) -> str:
     direct = str(((result.get("sent") or {}).get("epic")) or "").strip()
     if direct:
@@ -131,17 +109,6 @@ def _extract_opened_quantity(result: dict[str, Any]) -> float:
         except (TypeError, ValueError):
             continue
     return 0.0
-
-
-def _deal_closed_fully(result: dict[str, Any], deal_id: str) -> bool:
-    target_deal_id = str(deal_id or "").strip()
-    if not target_deal_id:
-        return False
-    for detail in result.get("details") or []:
-        if str(detail.get("dealId") or "").strip() != target_deal_id:
-            continue
-        return str(detail.get("mode") or "").strip().lower() == "full"
-    return False
 
 
 @app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
@@ -343,21 +310,6 @@ def trading_worker(msg: func.QueueMessage) -> None:
         trade_key = _active_trade_key_for_webhook(payload)
         route_event = _route_event(payload)
         active_trade = STATE_STORE.get_active_trade(trade_key) if trade_key else None
-        if route_event in CLOSE_EVENTS and not payload.deal_id and trade_key:
-            active_deal_id = str((active_trade or {}).get("DealId") or "").strip()
-            if active_deal_id:
-                payload = _payload_with_deal_id(payload, active_deal_id)
-                log_event(
-                    LOGGER,
-                    logging.INFO,
-                    "worker.active_trade_resolved",
-                    request_id=envelope.request_id,
-                    dedupe_key=envelope.dedupe_key,
-                    trade_key=trade_key,
-                    deal_id=active_deal_id,
-                    instrument=payload.instrument,
-                    side=_trade_side_for_webhook(payload),
-                )
 
         started = time.perf_counter()
         result = CAPITAL_SERVICE.execute_webhook(
@@ -407,35 +359,30 @@ def trading_worker(msg: func.QueueMessage) -> None:
 
         STATE_STORE.mark_completed(envelope.dedupe_key, result)
         if route_event in OPEN_EVENTS and trade_key:
-            opened_deal_id = _extract_opened_deal_id(result)
-            if opened_deal_id:
-                trade_side = _trade_side_for_webhook(payload)
-                opened_quantity = _extract_opened_quantity(result)
-                opened_epic = _extract_opened_epic(result) or payload.epic
-                STATE_STORE.upsert_active_trade(
-                    trade_key=trade_key,
-                    deal_id=opened_deal_id,
+            trade_side = _trade_side_for_webhook(payload)
+            opened_quantity = _extract_opened_quantity(result)
+            opened_epic = _extract_opened_epic(result) or payload.epic
+            STATE_STORE.upsert_active_trade(
+                trade_key=trade_key,
+                strategy=payload.strategy,
+                instrument=payload.instrument,
+                side=trade_side,
+                account=payload.account,
+                epic=opened_epic,
+                original_quantity=opened_quantity,
+                remaining_quantity=opened_quantity,
+            )
+            opposite_side = "SELL" if trade_side == "BUY" else "BUY" if trade_side == "SELL" else ""
+            if opposite_side:
+                opposite_trade_key = STATE_STORE.make_active_trade_key(
                     strategy=payload.strategy,
                     instrument=payload.instrument,
-                    side=trade_side,
+                    side=opposite_side,
                     account=payload.account,
-                    epic=opened_epic,
-                    original_quantity=opened_quantity,
-                    remaining_quantity=opened_quantity,
                 )
-                opposite_side = "SELL" if trade_side == "BUY" else "BUY" if trade_side == "SELL" else ""
-                if opposite_side:
-                    opposite_trade_key = STATE_STORE.make_active_trade_key(
-                        strategy=payload.strategy,
-                        instrument=payload.instrument,
-                        side=opposite_side,
-                        account=payload.account,
-                    )
-                    STATE_STORE.clear_active_trade(opposite_trade_key)
+                STATE_STORE.clear_active_trade(opposite_trade_key)
         elif route_event in CLOSE_EVENTS and trade_key:
             remaining_size = float(result.get("remaining_size") or 0.0)
-            active_trade_deal_id = str((active_trade or {}).get("DealId") or "").strip()
-            refreshed_deal_id = str(result.get("dealId") or active_trade_deal_id).strip()
             active_original_quantity = float((active_trade or {}).get("OriginalQuantity") or 0.0)
             active_epic = str((active_trade or {}).get("Epic") or payload.epic).strip()
             if remaining_size > 0:
@@ -443,10 +390,9 @@ def trading_worker(msg: func.QueueMessage) -> None:
                     trade_key=trade_key,
                     remaining_quantity=remaining_size,
                     original_quantity=active_original_quantity if active_original_quantity > 0 else None,
-                    deal_id=refreshed_deal_id,
                     epic=active_epic,
                 )
-            elif _deal_closed_fully(result, payload.deal_id) or result.get("mode") == "partial" or result.get("closed_deals"):
+            elif result.get("mode") == "partial" or result.get("closed_deals"):
                 STATE_STORE.clear_active_trade(trade_key)
         log_event(
             LOGGER,

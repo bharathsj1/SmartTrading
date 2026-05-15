@@ -569,7 +569,6 @@ class CapitalTradingService:
         self,
         side: str = "",
         epic: str = "",
-        deal_id: str = "",
         instrument_key: str = "",
         identifier: str = "",
     ) -> Dict[str, Any]:
@@ -586,14 +585,6 @@ class CapitalTradingService:
                     resolved_epic = self._resolve_epic(instrument_key=instrument_key, epic=epic)
                 except Exception:
                     resolved_epic = str(epic or "").strip()
-
-            if deal_id:
-                deal = str(deal_id).strip()
-                try:
-                    self._request("DELETE", f"/api/v1/positions/{deal}")
-                    return {"ok": True, "message": "Position close request sent.", "closed_deals": [deal]}
-                except Exception as exc:
-                    return {"ok": False, "error": "close_failed", "message": self._clean_message(str(exc))}
 
             targets: List[str] = []
             for row in self._positions():
@@ -784,8 +775,6 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
 
         instrument_key = str(body.get("instrument", "")).strip()
         epic = str(body.get("epic", "")).strip()
-        deal_id = str(body.get("deal_id") or body.get("dealId") or "").strip()
-
         sl, tp = self._parse_sl_tp(body)
 
         open_events = {"entry", "open", "long", "short", "buy", "sell"}
@@ -826,7 +815,6 @@ class TradingRequestHandler(BaseHTTPRequestHandler):
             result = SERVICE.close_positions(
                 side=close_side,
                 epic=epic,
-                deal_id=deal_id,
                 instrument_key=instrument_key,
                 identifier=identifier,
             )

@@ -14,7 +14,6 @@ class NormalizedWebhook:
     side: str
     instrument: str
     epic: str
-    deal_id: str
     identifier: str
     account: str
     quantity: float
@@ -81,7 +80,6 @@ class NormalizedWebhook:
             side=str(payload.get("side") or "").strip().upper(),
             instrument=instrument,
             epic=str(payload.get("epic") or "").strip(),
-            deal_id=str(payload.get("deal_id") or payload.get("dealId") or "").strip(),
             identifier=str(payload.get("identifier") or "").strip(),
             account=str(payload.get("account") or "").strip(),
             quantity=quantity,

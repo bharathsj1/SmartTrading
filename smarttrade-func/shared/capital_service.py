@@ -464,37 +464,11 @@ class CapitalTradingService:
             )
         return out
 
-    def _position_by_deal_id(self, deal_id: str) -> Optional[dict[str, Any]]:
-        target_deal_id = str(deal_id or "").strip()
-        if not target_deal_id:
-            return None
-        try:
-            data = self._request("GET", f"/api/v1/positions/{target_deal_id}")
-        except Exception:
-            data = {}
-        position = data.get("position", {}) or {}
-        market = data.get("market", {}) or {}
-        found_deal_id = str(position.get("dealId") or "").strip()
-        if not found_deal_id:
-            return None
-        return {
-            "dealId": found_deal_id,
-            "direction": str(position.get("direction", "")).upper(),
-            "size": self._safe_float(position.get("size")),
-            "epic": str(market.get("epic", "")).strip(),
-        }
-
     def _find_position(
         self,
         epic: str = "",
         side: str = "",
-        deal_id: str = "",
     ) -> Optional[dict[str, Any]]:
-        if deal_id:
-            found = self._position_by_deal_id(deal_id)
-            if found:
-                return found
-
         positions = self._positions_for_epic(epic) if epic else self._positions()
         normalized_side = self._normalize_action(side) if side else ""
         for row in positions:
@@ -810,7 +784,6 @@ class CapitalTradingService:
         self,
         side: str = "",
         epic: str = "",
-        deal_id: str = "",
         instrument_key: str = "",
         identifier: str = "",
         quantity: float = 0.0,
@@ -829,10 +802,9 @@ class CapitalTradingService:
                 except Exception:
                     resolved_epic = str(epic or "").strip()
 
-            target_position = self._find_position(epic=resolved_epic, side=side, deal_id=deal_id)
+            target_position = self._find_position(epic=resolved_epic, side=side)
             if target_position:
                 resolved_epic = str(target_position.get("epic") or resolved_epic).strip()
-                deal_id = str(target_position.get("dealId") or deal_id).strip()
 
             requested_close_size = self._resolve_close_quantity(
                 total_size=self._safe_float((target_position or {}).get("size")),
@@ -892,45 +864,6 @@ class CapitalTradingService:
                     ],
                     "partial_close": partial_result,
                 }
-
-            if deal_id:
-                try:
-                    self._request("DELETE", f"/api/v1/positions/{str(deal_id).strip()}")
-                    return {
-                        "ok": True,
-                        "message": "Position close request sent.",
-                        "closed_deals": [str(deal_id).strip()],
-                        "details": [
-                            {
-                                "dealId": str(deal_id).strip(),
-                                "mode": "full",
-                                "closed_size": self._safe_float((target_position or {}).get("size")),
-                                "remaining_size": 0.0,
-                            }
-                        ],
-                    }
-                except Exception as exc:
-                    fallback_position = self._find_position(epic=resolved_epic, side=side, deal_id="")
-                    fallback_deal_id = str((fallback_position or {}).get("dealId") or "").strip()
-                    if fallback_deal_id and fallback_deal_id != str(deal_id).strip():
-                        try:
-                            self._request("DELETE", f"/api/v1/positions/{fallback_deal_id}")
-                            return {
-                                "ok": True,
-                                "message": "Position close request sent.",
-                                "closed_deals": [fallback_deal_id],
-                                "details": [
-                                    {
-                                        "dealId": fallback_deal_id,
-                                        "mode": "full",
-                                        "closed_size": self._safe_float((fallback_position or {}).get("size")),
-                                        "remaining_size": 0.0,
-                                    }
-                                ],
-                            }
-                        except Exception:
-                            pass
-                    return {"ok": False, "error": "close_failed", "message": self._clean_message(str(exc))}
 
             targets: List[str] = []
             for row in self._positions():
@@ -1053,7 +986,6 @@ class CapitalTradingService:
         quantity = self._resolve_order_quantity(webhook)
         instrument_key = webhook.instrument or self._settings.default_instrument
         epic = webhook.epic
-        deal_id = webhook.deal_id
         sl = webhook.sl
         tp = self._entry_take_profit(webhook)
         # Pine staged exits currently do not send qty_percent, so infer them from reason codes.
@@ -1130,7 +1062,6 @@ class CapitalTradingService:
             result = self.close_positions(
                 side=close_side,
                 epic=epic,
-                deal_id=deal_id,
                 instrument_key=instrument_key,
                 identifier=identifier,
                 quantity=close_quantity,
@@ -1156,7 +1087,7 @@ class CapitalTradingService:
                 or ""
             ).strip()
         elif event in close_events:
-            resolved_deal_id = str(result.get("dealId") or deal_id or "").strip()
+            resolved_deal_id = str(result.get("dealId") or "").strip()
 
         log_event(
             self._logger,

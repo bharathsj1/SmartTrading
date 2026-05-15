@@ -73,8 +73,6 @@ def summarize_payload(value: Any) -> Any:
         "tf",
         "bar_time",
         "comment",
-        "deal_id",
-        "dealId",
     )
     return {key: masked[key] for key in keys if key in masked}
 

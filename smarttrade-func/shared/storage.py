@@ -291,7 +291,6 @@ class TradingStateStore:
     def upsert_active_trade(
         self,
         trade_key: str,
-        deal_id: str,
         strategy: str,
         instrument: str,
         side: str,
@@ -303,7 +302,6 @@ class TradingStateStore:
         self._table_client().upsert_entity(
             {
                 **self._active_trade_entity(trade_key),
-                "DealId": str(deal_id or "").strip(),
                 "Strategy": str(strategy or "").strip(),
                 "Instrument": str(instrument or "").strip(),
                 "Side": str(side or "").strip(),
@@ -318,7 +316,6 @@ class TradingStateStore:
         self._log_state(
             "state.active_trade_upserted",
             trade_key,
-            deal_id=str(deal_id or "").strip(),
             instrument=str(instrument or "").strip(),
             side=str(side or "").strip(),
             original_quantity=float(original_quantity),
@@ -330,7 +327,6 @@ class TradingStateStore:
         trade_key: str,
         remaining_quantity: float,
         original_quantity: Optional[float] = None,
-        deal_id: str = "",
         epic: str = "",
     ) -> None:
         entity = {
@@ -340,8 +336,6 @@ class TradingStateStore:
         }
         if original_quantity is not None:
             entity["OriginalQuantity"] = float(original_quantity)
-        if deal_id:
-            entity["DealId"] = str(deal_id).strip()
         if epic:
             entity["Epic"] = str(epic).strip()
         self._table_client().upsert_entity(entity, mode=UpdateMode.MERGE)
@@ -350,7 +344,6 @@ class TradingStateStore:
             trade_key,
             remaining_quantity=float(remaining_quantity),
             original_quantity=float(original_quantity) if original_quantity is not None else None,
-            deal_id=str(deal_id or "").strip(),
             epic=str(epic or "").strip(),
         )
 
