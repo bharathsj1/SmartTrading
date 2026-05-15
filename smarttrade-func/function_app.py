@@ -180,28 +180,6 @@ def tradingview_webhook(req: func.HttpRequest) -> func.HttpResponse:
     )
 
     try:
-        reserved = STATE_STORE.reserve_webhook(envelope)
-        if not reserved:
-            existing = STATE_STORE.get(dedupe_key) or {}
-            log_event(
-                LOGGER,
-                logging.INFO,
-                "webhook.duplicate_ignored",
-                request_id=request_id,
-                dedupe_key=dedupe_key,
-                existing_status=str(existing.get("Status") or "").lower(),
-                instrument=webhook.instrument,
-                webhook_event=webhook.event,
-            )
-            return _json_response(
-                {
-                    "ok": True,
-                    "message": "Webhook accepted",
-                    "request_id": request_id,
-                    "duplicate": True,
-                },
-                200,
-            )
         QUEUE_PUBLISHER.enqueue(envelope)
     except Exception as exc:
         STATE_STORE.mark_enqueue_failed(dedupe_key, str(exc))
@@ -267,19 +245,6 @@ def trading_worker(msg: func.QueueMessage) -> None:
     processing_started_at = utc_now_iso()
     queue_latency_ms = milliseconds_between(envelope.received_at, processing_started_at)
 
-    existing = STATE_STORE.get(envelope.dedupe_key)
-    if existing and str(existing.get("Status") or "").lower() == "completed":
-        log_event(
-            LOGGER,
-            logging.INFO,
-            "worker.duplicate_skipped",
-            request_id=envelope.request_id,
-            dedupe_key=envelope.dedupe_key,
-            status="completed",
-            queue_latency_ms=queue_latency_ms,
-        )
-        return
-
     dequeue_count = getattr(msg, "dequeue_count", 1) or 1
     log_event(
         LOGGER,
@@ -288,7 +253,6 @@ def trading_worker(msg: func.QueueMessage) -> None:
         request_id=envelope.request_id,
         dedupe_key=envelope.dedupe_key,
         queue_latency_ms=queue_latency_ms,
-        existing_status=str((existing or {}).get("Status") or "").lower(),
         dequeue_count=int(dequeue_count),
         instrument=envelope.payload.instrument,
         webhook_event=envelope.payload.event,
