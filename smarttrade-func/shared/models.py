@@ -60,6 +60,8 @@ class NormalizedWebhook:
         quantity_percent = cls._to_float(payload.get("qty_percent"))
         if quantity_percent is None:
             quantity_percent = cls._to_float(payload.get("quantity_percent"))
+        if quantity_percent is None:
+            quantity_percent = cls._to_float(payload.get("close_pct"))
 
         tp1 = cls._to_float(payload.get("tp1"))
         tp = tp1
