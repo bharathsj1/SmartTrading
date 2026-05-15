@@ -538,6 +538,8 @@ class CapitalTradingService:
         return webhook.tp
 
     def _reason_based_close_percent(self, webhook: NormalizedWebhook) -> Optional[float]:
+        if webhook.quantity_percent is not None and webhook.quantity_percent > 0:
+            return webhook.quantity_percent
         reason = str(webhook.reason or webhook.comment or "").strip().upper()
         mapped = {
             "LXTP1": 40.0,
@@ -988,8 +990,7 @@ class CapitalTradingService:
         epic = webhook.epic
         sl = webhook.sl
         tp = self._entry_take_profit(webhook)
-        # Pine staged exits currently do not send qty_percent, so infer them from reason codes.
-        # close_quantity_percent = webhook.quantity_percent
+        # Prefer the staged close percent sent by Pine; fall back to legacy reason codes.
         close_quantity_percent = self._reason_based_close_percent(webhook)
         close_quantity = webhook.quantity
         if self._uses_reason_based_staged_exit(webhook):

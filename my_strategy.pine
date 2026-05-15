@@ -866,6 +866,9 @@ slAtrMult  = input.float(1.8, "SL ATR Multiplier", step = 0.1, group = G_RISK)
 tp1AtrMult = input.float(1.2, "TP1 ATR Multiplier", step = 0.1, group = G_RISK)
 tp2AtrMult = input.float(2.4, "TP2 ATR Multiplier", step = 0.1, group = G_RISK)
 tp3AtrMult = input.float(3.6, "TP3 ATR Multiplier", step = 0.1, group = G_RISK)
+useProfitLock = input.bool(false, "Lock Profit After TP", group = G_RISK)
+tp1LockAtrMult = input.float(0.25, "TP1 Lock ATR Multiplier", step = 0.05, group = G_RISK)
+tp2LockAtrMult = input.float(1.0, "TP2 Lock ATR Multiplier", step = 0.1, group = G_RISK)
 
 atrTarget = ta.atr(atrTargetLen)
 
@@ -1075,7 +1078,15 @@ slLine := leEntrySignal ? (useAtrTargets ? slBotLvlAtr : slBotLvlPct) :
           seEntrySignal ? (useAtrTargets ? slTopLvlAtr : slTopLvlPct) :
           nz(slLine[1])
 
-if tp1Done and condition[1] >= 1.0
+if useProfitLock and tp1Done and condition[1] >= 1.2
+    slLine := math.max(slLine, entryLine + atrTarget * tp2LockAtrMult)
+else if useProfitLock and tp1Done and condition[1] <= -1.2
+    slLine := math.min(slLine, entryLine - atrTarget * tp2LockAtrMult)
+else if useProfitLock and tp1Done and condition[1] >= 1.0
+    slLine := math.max(slLine, entryLine + atrTarget * tp1LockAtrMult)
+else if useProfitLock and tp1Done and condition[1] <= -1.0
+    slLine := math.min(slLine, entryLine - atrTarget * tp1LockAtrMult)
+else if tp1Done and condition[1] >= 1.0
     slLine := math.max(slLine, entryLine)
 else if tp1Done and condition[1] <= -1.0
     slLine := math.min(slLine, entryLine)
@@ -1161,13 +1172,13 @@ seWebhookMsg    = useWebhookJson ? f_entry_json('short', 'SE'   , 'MA_CROSS', 't
 
 lxMsgSLWebhook  = useWebhookJson ? f_exit_json ('long' , 'SL'   , 'MA_CROSS', 'trend', orderQty, 100.0, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgSL
 lxMsgTP1Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP1', 'MA_CROSS', 'trend', tp1QtyWebhook, tp1OriginalQtyPct, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP1
-lxMsgTP2Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP2', 'MA_CROSS', 'trend', tp2QtyWebhook, tp2OriginalQtyPct, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP2
+lxMsgTP2Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP2', 'MA_CROSS', 'trend', tp2QtyWebhook, tp2CloseQtyPct, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP2
 lxMsgTP3Webhook = useWebhookJson ? f_exit_json ('long' , 'LXTP3', 'MA_CROSS', 'trend', tp3QtyWebhook, tp3OriginalQtyPct, longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsgTP3
 lxMsgWebhook    = useWebhookJson ? f_close_json('long' , 'LX'   , 'MA_CROSS', 'trend', longSlWebhook, longTp1Webhook, longTp2Webhook, longTp3Webhook) : i_lxMsg
 
 sxMsgSLWebhook  = useWebhookJson ? f_exit_json ('short', 'SL'   , 'MA_CROSS', 'trend', orderQty, 100.0, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgSL
 sxMsgTP1Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP1', 'MA_CROSS', 'trend', tp1QtyWebhook, tp1OriginalQtyPct, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP1
-sxMsgTP2Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP2', 'MA_CROSS', 'trend', tp2QtyWebhook, tp2OriginalQtyPct, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP2
+sxMsgTP2Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP2', 'MA_CROSS', 'trend', tp2QtyWebhook, tp2CloseQtyPct, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP2
 sxMsgTP3Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP3', 'MA_CROSS', 'trend', tp3QtyWebhook, tp3OriginalQtyPct, shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsgTP3
 sxMsgWebhook    = useWebhookJson ? f_close_json('short', 'SX'   , 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsg
 
