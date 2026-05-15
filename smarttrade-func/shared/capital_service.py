@@ -568,6 +568,14 @@ class CapitalTradingService:
         reason = str(webhook.reason or webhook.comment or "").strip().upper()
         return reason in {"LXTP1", "SXTP1", "LXTP2", "SXTP2", "LX", "SX", "SL"}
 
+    def _position_side_from_exit_reason(self, webhook: NormalizedWebhook) -> str:
+        reason = str(webhook.reason or webhook.comment or "").strip().upper()
+        if reason.startswith("LX"):
+            return "BUY"
+        if reason.startswith("SX"):
+            return "SELL"
+        return ""
+
     def _extract_open_dealid_from_confirm(self, confirm: dict[str, Any]) -> str:
         for row in confirm.get("affectedDeals") or []:
             if str(row.get("status", "")).upper() in {"OPEN", "OPENED"}:
@@ -1055,7 +1063,7 @@ class CapitalTradingService:
                 tp=tp,
             )
         elif event in close_events:
-            close_side = side or action
+            close_side = self._position_side_from_exit_reason(webhook) or side or action
             if close_side == "LONG":
                 close_side = "BUY"
             elif close_side == "SHORT":

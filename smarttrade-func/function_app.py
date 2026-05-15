@@ -71,10 +71,22 @@ def _route_event(webhook: NormalizedWebhook) -> str:
     return "close"
 
 
+def _position_side_from_exit_reason(webhook: NormalizedWebhook) -> str:
+    reason = str(webhook.reason or webhook.comment or "").strip().upper()
+    if reason.startswith("LX"):
+        return "BUY"
+    if reason.startswith("SX"):
+        return "SELL"
+    return ""
+
+
 def _trade_side_for_webhook(webhook: NormalizedWebhook) -> str:
     route_event = _route_event(webhook)
     if route_event in OPEN_EVENTS:
         return _normalize_trade_side(webhook.action or webhook.side or route_event)
+    reason_side = _position_side_from_exit_reason(webhook)
+    if reason_side:
+        return reason_side
     return _normalize_trade_side(webhook.side or webhook.action)
 
 
