@@ -944,6 +944,7 @@ f_event_json(string _event, string _side, string _reason, string _setup, string 
     _json := _json + '"secret":' + f_json_str(tvSecret) + ","
     _json := _json + '"event":' + f_json_str(_event) + ","
     _json := _json + '"side":' + f_json_str(f_payload_side(_event, _side)) + ","
+    _json := _json + '"position_side":' + f_json_str(str.lower(_side)) + ","
     _json := _json + '"order_side":' + f_json_str(f_order_side(_event, _side)) + ","
     _json := _json + '"instrument":' + f_json_str(instrumentKey) + ","
     _json := _json + '"ticker":' + (sendSymbolId ? f_json_str(syminfo.tickerid) : f_json_str("")) + ","

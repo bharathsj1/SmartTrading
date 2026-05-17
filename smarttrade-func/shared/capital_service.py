@@ -576,6 +576,19 @@ class CapitalTradingService:
             return "SELL"
         return ""
 
+    def _position_side_for_exit(self, webhook: NormalizedWebhook) -> str:
+        explicit_side = self._normalize_action(webhook.position_side)
+        if explicit_side in {"BUY", "SELL"}:
+            return explicit_side
+        reason_side = self._position_side_from_exit_reason(webhook)
+        if reason_side:
+            return reason_side
+        order_side = webhook.order_side or webhook.side or webhook.action
+        opposite_side = self._opposite_action(order_side)
+        if opposite_side:
+            return opposite_side
+        return self._normalize_action(webhook.side or webhook.action)
+
     def _extract_open_dealid_from_confirm(self, confirm: dict[str, Any]) -> str:
         for row in confirm.get("affectedDeals") or []:
             if str(row.get("status", "")).upper() in {"OPEN", "OPENED"}:
@@ -1063,7 +1076,7 @@ class CapitalTradingService:
                 tp=tp,
             )
         elif event in close_events:
-            close_side = self._position_side_from_exit_reason(webhook) or side or action
+            close_side = self._position_side_for_exit(webhook)
             if close_side == "LONG":
                 close_side = "BUY"
             elif close_side == "SHORT":

@@ -58,6 +58,8 @@ def summarize_payload(value: Any) -> Any:
         "event",
         "action",
         "side",
+        "position_side",
+        "order_side",
         "instrument",
         "ticker",
         "strategy",

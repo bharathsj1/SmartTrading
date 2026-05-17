@@ -12,6 +12,8 @@ class NormalizedWebhook:
     event: str
     action: str
     side: str
+    position_side: str
+    order_side: str
     instrument: str
     epic: str
     identifier: str
@@ -78,6 +80,8 @@ class NormalizedWebhook:
             event=str(payload.get("event") or "").strip().lower(),
             action=str(payload.get("action") or "").strip().upper(),
             side=str(payload.get("side") or "").strip().upper(),
+            position_side=str(payload.get("position_side") or "").strip().upper(),
+            order_side=str(payload.get("order_side") or "").strip().upper(),
             instrument=instrument,
             epic=str(payload.get("epic") or "").strip(),
             identifier=str(payload.get("identifier") or "").strip(),

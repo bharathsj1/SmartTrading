@@ -62,6 +62,15 @@ def _normalize_trade_side(value: str) -> str:
     return side
 
 
+def _opposite_trade_side(value: str) -> str:
+    side = _normalize_trade_side(value)
+    if side == "BUY":
+        return "SELL"
+    if side == "SELL":
+        return "BUY"
+    return ""
+
+
 def _route_event(webhook: NormalizedWebhook) -> str:
     event = str(webhook.event or "").strip().lower()
     if event:
@@ -80,14 +89,25 @@ def _position_side_from_exit_reason(webhook: NormalizedWebhook) -> str:
     return ""
 
 
+def _position_side_for_exit(webhook: NormalizedWebhook) -> str:
+    explicit_side = _normalize_trade_side(webhook.position_side)
+    if explicit_side in {"BUY", "SELL"}:
+        return explicit_side
+    reason_side = _position_side_from_exit_reason(webhook)
+    if reason_side:
+        return reason_side
+    order_side = webhook.order_side or webhook.side or webhook.action
+    opposite_side = _opposite_trade_side(order_side)
+    if opposite_side:
+        return opposite_side
+    return _normalize_trade_side(webhook.side or webhook.action)
+
+
 def _trade_side_for_webhook(webhook: NormalizedWebhook) -> str:
     route_event = _route_event(webhook)
     if route_event in OPEN_EVENTS:
         return _normalize_trade_side(webhook.action or webhook.side or route_event)
-    reason_side = _position_side_from_exit_reason(webhook)
-    if reason_side:
-        return reason_side
-    return _normalize_trade_side(webhook.side or webhook.action)
+    return _position_side_for_exit(webhook)
 
 
 def _active_trade_key_for_webhook(webhook: NormalizedWebhook) -> str:
