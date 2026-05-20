@@ -13,7 +13,7 @@ strategy(
   pyramiding              = 0,
   default_qty_type        = strategy.percent_of_equity,
   default_qty_value       = 10,
-  calc_on_every_tick      = false,
+  calc_on_every_tick      = true,
   process_orders_on_close = true)
 
 // Project #827
@@ -45,23 +45,24 @@ h                         = input(false,           'Signals for Heikin Ashi Cand
 //INDICATOR SETTINGS
 swing_length              = input.int(10,          'Swing High/Low Length', group = 'Settings', minval = 1, maxval = 50)
 history_of_demand_to_keep = input.int(20,          'History To Keep', minval = 5, maxval = 50)
-box_width                 = input.float(2.5,       'Supply/Demand Box Width', group = 'Settings', minval = 1, maxval = 10, step = 0.5)
+box_width                 = input.float(3.5,       'Supply/Demand Box Width', group = 'Settings', minval = 1, maxval = 10, step = 0.5)
 
 //INDICATOR VISUAL SETTINGS
+show_supply_demand        = input.bool(true,       'Show Supply/Demand Zones', group = 'Visual Settings')
 show_zigzag               = input.bool(false,      'Show Zig Zag', group = 'Visual Settings', inline = '1')
 show_price_action_labels  = input.bool(false,      'Show Price Action Labels', group = 'Visual Settings', inline = '2')
 
-supply_color              = input.color(#00000000, 'Supply', group = 'Visual Settings', inline = '3')
-supply_outline_color      = input.color(#00000000, 'Outline', group = 'Visual Settings', inline = '3')
+supply_color              = input.color(color.new(color.rgb(178, 40, 58), 84), 'Supply', group = 'Visual Settings', inline = '3')
+supply_outline_color      = input.color(color.new(color.rgb(178, 40, 58), 15), 'Outline', group = 'Visual Settings', inline = '3')
 
-demand_color              = input.color(#00000000, 'Demand', group = 'Visual Settings', inline = '4')
-demand_outline_color      = input.color(#00000000, 'Outline', group = 'Visual Settings', inline = '4')
+demand_color              = input.color(color.new(color.rgb(21, 132, 95), 84), 'Demand', group = 'Visual Settings', inline = '4')
+demand_outline_color      = input.color(color.new(color.rgb(21, 132, 95), 15), 'Outline', group = 'Visual Settings', inline = '4')
 
-bos_label_color           = input.color(#00000000, 'BOS Label', group = 'Visual Settings', inline = '5')
-poi_label_color           = input.color(#00000000, 'POI Label', group = 'Visual Settings', inline = '7')
-poi_border_color          = input.color(#00000000, 'POI border', group = 'Visual Settings', inline = '7')
-swing_type_color          = input.color(#00000000, 'Price Action Label', group = 'Visual Settings', inline = '8')
-zigzag_color              = input.color(#00000000, 'Zig Zag', group = 'Visual Settings', inline = '9')
+bos_label_color           = input.color(color.new(color.rgb(214, 214, 214), 0), 'BOS Label', group = 'Visual Settings', inline = '5')
+poi_label_color           = input.color(color.new(color.white, 0), 'POI Label', group = 'Visual Settings', inline = '7')
+poi_border_color          = input.color(color.new(color.white, 72), 'POI border', group = 'Visual Settings', inline = '7')
+swing_type_color          = input.color(color.new(color.rgb(214, 214, 214), 0), 'Price Action Label', group = 'Visual Settings', inline = '8')
+zigzag_color              = input.color(color.new(color.rgb(132, 147, 168), 0), 'Zig Zag', group = 'Visual Settings', inline = '9')
 
 //END SETTINGS
 
@@ -145,7 +146,7 @@ f_supply_demand(value_array, bn_array, box_array, label_array, box_type, atrValu
     okay_to_draw = f_check_overlapping(poi, box_array, atrValue)
     // okay_to_draw = true
     //delete oldest box, and then create a new box and add it to the array
-    if box_type == 1 and okay_to_draw
+    if show_supply_demand and box_type == 1 and okay_to_draw
         box.delete( array.get(box_array, array.size(box_array) - 1) )
         f_array_add_pop(box_array, box.new( left = box_left, top = box_top, right = box_right, bottom = box_bottom, border_color = supply_outline_color,
              bgcolor = supply_color, extend = extend.right, text = 'SUPPLY', text_halign = text.align_center, text_valign = text.align_center, text_color = poi_label_color, text_size = size.small, xloc = xloc.bar_index))
@@ -153,7 +154,7 @@ f_supply_demand(value_array, bn_array, box_array, label_array, box_type, atrValu
         box.delete( array.get(label_array, array.size(label_array) - 1) )
         f_array_add_pop(label_array, box.new( left = box_left, top = poi, right = box_right, bottom = poi, border_color = poi_border_color,
              bgcolor = poi_border_color, extend = extend.right, text = 'POI', text_halign = text.align_left, text_valign = text.align_center, text_color = poi_label_color, text_size = size.small, xloc = xloc.bar_index))
-    else if box_type == -1 and okay_to_draw
+    else if show_supply_demand and box_type == -1 and okay_to_draw
         box.delete( array.get(box_array, array.size(box_array) - 1) )
         f_array_add_pop(box_array, box.new( left = box_left, top = box_top, right = box_right, bottom = box_bottom, border_color = demand_outline_color,
              bgcolor = demand_color, extend = extend.right,  text = 'DEMAND', text_halign = text.align_center, text_valign = text.align_center, text_color = poi_label_color, text_size = size.small, xloc = xloc.bar_index))
@@ -214,6 +215,44 @@ f_extend_box_endpoint(box_array) =>
 
     for i = 0 to array.size(box_array) - 1
         box.set_right(array.get(box_array, i), bar_index + 100)
+
+//      FUNCTION TO FIND NEAREST SUPPLY ABOVE PRICE
+f_nearest_supply_above(box_array, price, buffer) =>
+    float nearest = na
+    for i = 0 to array.size(box_array) - 1
+        zone_box = array.get(box_array, i)
+        if not na(zone_box)
+            zone_top = box.get_top(zone_box)
+            zone_bottom = box.get_bottom(zone_box)
+            zone_high = math.max(zone_top, zone_bottom)
+            zone_low = math.min(zone_top, zone_bottom)
+            if not na(zone_high) and not na(zone_low)
+                buffered_low = zone_low - buffer
+                buffered_high = zone_high + buffer
+                candidate = price >= buffered_low and price <= buffered_high ? price :
+                     buffered_low > price ? buffered_low : na
+                if not na(candidate)
+                    nearest := na(nearest) ? candidate : math.min(nearest, candidate)
+    nearest
+
+//      FUNCTION TO FIND NEAREST DEMAND BELOW PRICE
+f_nearest_demand_below(box_array, price, buffer) =>
+    float nearest = na
+    for i = 0 to array.size(box_array) - 1
+        zone_box = array.get(box_array, i)
+        if not na(zone_box)
+            zone_top = box.get_top(zone_box)
+            zone_bottom = box.get_bottom(zone_box)
+            zone_high = math.max(zone_top, zone_bottom)
+            zone_low = math.min(zone_top, zone_bottom)
+            if not na(zone_high) and not na(zone_low)
+                buffered_low = zone_low - buffer
+                buffered_high = zone_high + buffer
+                candidate = price >= buffered_low and price <= buffered_high ? price :
+                     buffered_high < price ? buffered_high : na
+                if not na(candidate)
+                    nearest := na(nearest) ? candidate : math.max(nearest, candidate)
+    nearest
 
 
 //
@@ -844,15 +883,15 @@ O_SXMSGX     = 'Short Exit'
 // ——————————— <input>          |           |                               |                        Line length guide |
 i_lxLvlTP1   = input.float      (0.8,       'Level TP1'                     , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP1   = input.float      (40,        'Qty   TP1'                     , group = G_RISK,
+i_lxQtyTP1   = input.float      (20,        'Qty   TP1'                     , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlTP2   = input.float      (1.5,       'Level TP2'                     , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP2   = input.float      (30,        'Qty   TP2'                     , group = G_RISK,
+i_lxQtyTP2   = input.float      (60,        'Qty   TP2'                     , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlTP3   = input.float      (2,         'Runner Target'                 , group = G_RISK,
      tooltip =                   T_LVL)
-i_lxQtyTP3   = input.float      (30,        'Runner Qty'                    , group = G_RISK,
+i_lxQtyTP3   = input.float      (20,        'Runner Qty'                    , group = G_RISK,
      tooltip =                   T_QTY)
 i_lxLvlSL    = input.float      (0.5,       'Stop Loss'                     , group = G_RISK,
      tooltip =                   T_LVL)
@@ -869,6 +908,9 @@ tp3AtrMult = input.float(3.6, "TP3 ATR Multiplier", step = 0.1, group = G_RISK)
 useProfitLock = input.bool(false, "Lock Profit After TP", group = G_RISK)
 tp1LockAtrMult = input.float(0.25, "TP1 Lock ATR Multiplier", step = 0.05, group = G_RISK)
 tp2LockAtrMult = input.float(1.0, "TP2 Lock ATR Multiplier", step = 0.1, group = G_RISK)
+useStructureRoomFilter = input.bool(true, "Avoid Entries Into Supply/Demand", group = G_RISK)
+zoneBufferAtrMult = input.float(0.2, "Supply/Demand Buffer ATR", minval = 0.0, step = 0.05, group = G_RISK)
+minRoomToRisk = input.float(1.0, "Min Room To Risk", minval = 0.0, step = 0.1, group = G_RISK)
 
 atrTarget = ta.atr(atrTargetLen)
 
@@ -1006,6 +1048,8 @@ var float condition = 0.0
 var float slLine    = 0.0
 var float entryLine = 0.0
 var bool  tp1Done   = false
+varip bool longTp1FireLock = false
+varip bool shortTp1FireLock = false
 
 cooldownBars = input.int(1, 'Cooldown Bars', minval = 0, group = G_RISK)
 maxConsecutiveSL = input.int(2, 'Max Consecutive SL', minval = 1, group = G_RISK)
@@ -1056,10 +1100,18 @@ useSeparationFilter = input.bool(true, 'Use MA Separation Filter', group = G_RIS
 minSeparationAtr = input.float(0.15, 'Min MA Separation ATR', minval = 0.0, step = 0.05, group = G_RISK)
 maSeparation = math.abs(closeSeriesAlt - openSeriesAlt)
 separationOK = not useSeparationFilter or maSeparation >= atrFast * minSeparationAtr
+zoneBuffer = atrFast * zoneBufferAtrMult
+nearestSupplyAbove = f_nearest_supply_above(current_supply_box, close, zoneBuffer)
+nearestDemandBelow = f_nearest_demand_below(current_demand_box, close, zoneBuffer)
+entryRiskDistance = useAtrTargets ? atrTarget * slAtrMult : close * (i_lxLvlSL / 100)
+roomToSupply = na(nearestSupplyAbove) ? na : nearestSupplyAbove - close
+roomToDemand = na(nearestDemandBelow) ? na : close - nearestDemandBelow
+longStructureRoomOK = not useStructureRoomFilter or na(roomToSupply) or roomToSupply >= entryRiskDistance * minRoomToRisk
+shortStructureRoomOK = not useStructureRoomFilter or na(roomToDemand) or roomToDemand >= entryRiskDistance * minRoomToRisk
 allowLongTradeType  = tradeType == 'LONG' or tradeType == 'BOTH'
 allowShortTradeType = tradeType == 'SHORT' or tradeType == 'BOTH'
-longSignalAllowed   = allowLongTradeType and allowLongTrend and allowLongSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and canTrade
-shortSignalAllowed  = allowShortTradeType and allowShortTrend and allowShortSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and canTrade
+longSignalAllowed   = allowLongTradeType and allowLongTrend and allowLongSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and longStructureRoomOK and canTrade
+shortSignalAllowed  = allowShortTradeType and allowShortTrend and allowShortSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and shortStructureRoomOK and canTrade
 leEntrySignal = leTrigger and longSignalAllowed and condition[1] <= 0.0
 seEntrySignal = seTrigger and shortSignalAllowed and condition[1] >= 0.0
 
@@ -1184,15 +1236,15 @@ sxMsgTP3Webhook = useWebhookJson ? f_exit_json ('short', 'SXTP3', 'MA_CROSS', 't
 sxMsgWebhook    = useWebhookJson ? f_close_json('short', 'SX'   , 'MA_CROSS', 'trend', shortSlWebhook, shortTp1Webhook, shortTp2Webhook, shortTp3Webhook) : i_sxMsg
 
 fireLongEntry  = strategy.position_size <= 0 and longE and barstate.isconfirmed
-fireLongTP1    = strategy.position_size > 0 and longTP1 and barstate.isconfirmed
-fireLongTP2    = strategy.position_size > 0 and longTP2 and barstate.isconfirmed
-fireLongTP3    = strategy.position_size > 0 and longTP3 and barstate.isconfirmed
+fireLongTP1    = strategy.position_size > 0 and longTP1 and not longTp1FireLock
+fireLongTP2    = strategy.position_size > 0 and longTP2
+fireLongTP3    = strategy.position_size > 0 and longTP3
 fireLongSL     = strategy.position_size > 0 and longSL and barstate.isconfirmed
 fireLongClose  = strategy.position_size > 0 and longX and barstate.isconfirmed
 fireShortEntry = strategy.position_size >= 0 and shortE and barstate.isconfirmed
-fireShortTP1   = strategy.position_size < 0 and shortTP1 and barstate.isconfirmed
-fireShortTP2   = strategy.position_size < 0 and shortTP2 and barstate.isconfirmed
-fireShortTP3   = strategy.position_size < 0 and shortTP3 and barstate.isconfirmed
+fireShortTP1   = strategy.position_size < 0 and shortTP1 and not shortTp1FireLock
+fireShortTP2   = strategy.position_size < 0 and shortTP2
+fireShortTP3   = strategy.position_size < 0 and shortTP3
 fireShortSL    = strategy.position_size < 0 and shortSL and barstate.isconfirmed
 fireShortClose = strategy.position_size < 0 and shortX and barstate.isconfirmed
  
@@ -1207,6 +1259,8 @@ if fireLongEntry
       comment          = 'LE')
     lastTradeBar := bar_index
     tp1Done := false
+    longTp1FireLock := false
+    shortTp1FireLock := false
 if fireLongTP1
     strategy.close(
       'Long',
@@ -1214,6 +1268,7 @@ if fireLongTP1
       alert_message    = lxMsgTP1Webhook,
       comment          = 'LXTP1')
     tp1Done := true
+    longTp1FireLock := true
 if fireLongTP2
     strategy.close(
       'Long',
@@ -1226,12 +1281,14 @@ if fireLongTP3
       alert_message    = lxMsgWebhook,
       comment          = 'LXTP3')
     tp1Done := false
+    longTp1FireLock := false
 if fireLongClose
     strategy.close(
       'Long',
       alert_message    = lxMsgWebhook,
       comment          = 'LX')
     tp1Done := false
+    longTp1FireLock := false
 //<short orders>
 if fireShortEntry
     strategy.entry(
@@ -1241,6 +1298,8 @@ if fireShortEntry
       comment          = 'SE')
     lastTradeBar := bar_index
     tp1Done := false
+    longTp1FireLock := false
+    shortTp1FireLock := false
 if fireShortTP1
     strategy.close(
       'Short',
@@ -1248,6 +1307,7 @@ if fireShortTP1
       alert_message    = sxMsgTP1Webhook,
       comment          = 'SXTP1')
     tp1Done := true
+    shortTp1FireLock := true
 if fireShortTP2
     strategy.close(
       'Short',
@@ -1260,13 +1320,14 @@ if fireShortTP3
       alert_message    = sxMsgWebhook,
       comment          = 'SXTP3')
     tp1Done := false
+    shortTp1FireLock := false
 if fireShortClose
     strategy.close(
       'Short',
       alert_message    = sxMsgWebhook,
       comment          = 'SX')
     tp1Done := false
-
+    shortTp1FireLock := false
 if strategy.position_size > 0
     strategy.exit(
       'Long-SL',
@@ -1301,6 +1362,8 @@ plotLongStopFill = closedTradeNow and lastExitComment == 'SL' and lastEntryId ==
 plotShortStopFill = closedTradeNow and lastExitComment == 'SL' and lastEntryId == 'Short'
 if plotLongStopFill or plotShortStopFill
     tp1Done := false
+    longTp1FireLock := false
+    shortTp1FireLock := false
 plotLongEntry  = strategy.position_size > 0 and strategy.position_size[1] <= 0
 plotShortEntry = strategy.position_size < 0 and strategy.position_size[1] >= 0
 plotLongClose  = closedTradeNow and lastEntryId == 'Long' and lastExitComment == 'LX'
@@ -1445,6 +1508,26 @@ plot(
 plot(
   strategy.position_size * 100,
   title      = ".position_size",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  roomToSupply,
+  title      = "room_to_supply",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  roomToDemand,
+  title      = "room_to_demand",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  longStructureRoomOK ? 1 : 0,
+  title      = "long_structure_room_ok",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  shortStructureRoomOK ? 1 : 0,
+  title      = "short_structure_room_ok",
   editable   = false,
   display    = display.data_window)
 //#endregion }
