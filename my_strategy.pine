@@ -911,6 +911,10 @@ tp2LockAtrMult = input.float(1.0, "TP2 Lock ATR Multiplier", step = 0.1, group =
 useStructureRoomFilter = input.bool(true, "Avoid Entries Into Supply/Demand", group = G_RISK)
 zoneBufferAtrMult = input.float(0.2, "Supply/Demand Buffer ATR", minval = 0.0, step = 0.05, group = G_RISK)
 minRoomToRisk = input.float(1.0, "Min Room To Risk", minval = 0.0, step = 0.1, group = G_RISK)
+useRangeEntryFilter = input.bool(true, "Avoid Mid-Range Chop Entries", group = G_RISK)
+rangeFilterLen = input.int(18, "Range Filter Length", minval = 5, group = G_RISK)
+maxChopRangeAtr = input.float(3.0, "Max Chop Range ATR", minval = 0.5, step = 0.1, group = G_RISK)
+rangeEntryEdgePct = input.float(0.35, "Range Entry Edge %", minval = 0.05, maxval = 0.5, step = 0.05, group = G_RISK)
 
 atrTarget = ta.atr(atrTargetLen)
 
@@ -1108,10 +1112,23 @@ roomToSupply = na(nearestSupplyAbove) ? na : nearestSupplyAbove - close
 roomToDemand = na(nearestDemandBelow) ? na : close - nearestDemandBelow
 longStructureRoomOK = not useStructureRoomFilter or na(roomToSupply) or roomToSupply >= entryRiskDistance * minRoomToRisk
 shortStructureRoomOK = not useStructureRoomFilter or na(roomToDemand) or roomToDemand >= entryRiskDistance * minRoomToRisk
+rangeHigh = ta.highest(high, rangeFilterLen)
+rangeLow = ta.lowest(low, rangeFilterLen)
+prevRangeHigh = ta.highest(high, rangeFilterLen)[1]
+prevRangeLow = ta.lowest(low, rangeFilterLen)[1]
+rangeWidth = rangeHigh - rangeLow
+rangePosition = rangeWidth > 0 ? (close - rangeLow) / rangeWidth : 0.5
+rangeIsChoppy = rangeWidth <= atrFast * maxChopRangeAtr
+longRangeBreakout = not na(prevRangeHigh) and close > prevRangeHigh
+shortRangeBreakdown = not na(prevRangeLow) and close < prevRangeLow
+longAtRangeEdge = rangePosition <= rangeEntryEdgePct
+shortAtRangeEdge = rangePosition >= 1.0 - rangeEntryEdgePct
+longRangeEntryOK = not useRangeEntryFilter or not rangeIsChoppy or longAtRangeEdge or longRangeBreakout
+shortRangeEntryOK = not useRangeEntryFilter or not rangeIsChoppy or shortAtRangeEdge or shortRangeBreakdown
 allowLongTradeType  = tradeType == 'LONG' or tradeType == 'BOTH'
 allowShortTradeType = tradeType == 'SHORT' or tradeType == 'BOTH'
-longSignalAllowed   = allowLongTradeType and allowLongTrend and allowLongSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and longStructureRoomOK and canTrade
-shortSignalAllowed  = allowShortTradeType and allowShortTrend and allowShortSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and shortStructureRoomOK and canTrade
+longSignalAllowed   = allowLongTradeType and allowLongTrend and allowLongSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and longStructureRoomOK and longRangeEntryOK and canTrade
+shortSignalAllowed  = allowShortTradeType and allowShortTrend and allowShortSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and shortStructureRoomOK and shortRangeEntryOK and canTrade
 leEntrySignal = leTrigger and longSignalAllowed and condition[1] <= 0.0
 seEntrySignal = seTrigger and shortSignalAllowed and condition[1] >= 0.0
 
@@ -1530,6 +1547,26 @@ plot(
   title      = "short_structure_room_ok",
   editable   = false,
   display    = display.data_window)
+plot(
+  rangePosition,
+  title      = "range_position",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  rangeIsChoppy ? 1 : 0,
+  title      = "range_is_choppy",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  longRangeEntryOK ? 1 : 0,
+  title      = "long_range_entry_ok",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  shortRangeEntryOK ? 1 : 0,
+  title      = "short_range_entry_ok",
+  editable   = false,
+  display    = display.data_window)
 //#endregion }
 // ——————————— <↑↑↑ G_RISK ↑↑↑>
 
@@ -1654,7 +1691,7 @@ label.delete(
 // ——————————— <↑↑↑ G_SCRIPT02 ↑↑↑>
 
 //#region ———— <↓↓↓ G_SCRIPT03 ↓↓↓> {
-c_barCol = close > open ? color.rgb(120, 9, 139) : color.rgb(69, 155, 225)
+c_barCol = close > open ? color.green : color.red
 barcolor(
   i_barColOn ? c_barCol : na)
 //#endregion }
