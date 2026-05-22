@@ -13,6 +13,9 @@ strategy(
   pyramiding              = 0,
   default_qty_type        = strategy.percent_of_equity,
   default_qty_value       = 10,
+  max_boxes_count         = 500,
+  max_labels_count        = 500,
+  max_lines_count         = 500,
   calc_on_every_tick      = true,
   process_orders_on_close = true)
 
@@ -49,6 +52,7 @@ box_width                 = input.float(3.5,       'Supply/Demand Box Width', gr
 
 //INDICATOR VISUAL SETTINGS
 show_supply_demand        = input.bool(true,       'Show Supply/Demand Zones', group = 'Visual Settings')
+show_sd_backtest_bands     = input.bool(true,       'Show Supply/Demand Backtest Bands', group = 'Visual Settings')
 show_zigzag               = input.bool(false,      'Show Zig Zag', group = 'Visual Settings', inline = '1')
 show_price_action_labels  = input.bool(false,      'Show Price Action Labels', group = 'Visual Settings', inline = '2')
 
@@ -253,6 +257,48 @@ f_nearest_demand_below(box_array, price, buffer) =>
                 if not na(candidate)
                     nearest := na(nearest) ? candidate : math.max(nearest, candidate)
     nearest
+
+//      FUNCTION TO FIND THE NEAREST SUPPLY ZONE EDGE FOR HISTORICAL PLOTS
+f_nearest_supply_edge(box_array, price, buffer, want_high) =>
+    float nearest = na
+    float edge = na
+    for i = 0 to array.size(box_array) - 1
+        zone_box = array.get(box_array, i)
+        if not na(zone_box)
+            zone_top = box.get_top(zone_box)
+            zone_bottom = box.get_bottom(zone_box)
+            zone_high = math.max(zone_top, zone_bottom)
+            zone_low = math.min(zone_top, zone_bottom)
+            if not na(zone_high) and not na(zone_low)
+                buffered_low = zone_low - buffer
+                buffered_high = zone_high + buffer
+                candidate = price >= buffered_low and price <= buffered_high ? price :
+                     buffered_low > price ? buffered_low : na
+                if not na(candidate) and (na(nearest) or candidate < nearest)
+                    nearest := candidate
+                    edge := want_high ? zone_high : zone_low
+    edge
+
+//      FUNCTION TO FIND THE NEAREST DEMAND ZONE EDGE FOR HISTORICAL PLOTS
+f_nearest_demand_edge(box_array, price, buffer, want_high) =>
+    float nearest = na
+    float edge = na
+    for i = 0 to array.size(box_array) - 1
+        zone_box = array.get(box_array, i)
+        if not na(zone_box)
+            zone_top = box.get_top(zone_box)
+            zone_bottom = box.get_bottom(zone_box)
+            zone_high = math.max(zone_top, zone_bottom)
+            zone_low = math.min(zone_top, zone_bottom)
+            if not na(zone_high) and not na(zone_low)
+                buffered_low = zone_low - buffer
+                buffered_high = zone_high + buffer
+                candidate = price >= buffered_low and price <= buffered_high ? price :
+                     buffered_high < price ? buffered_high : na
+                if not na(candidate) and (na(nearest) or candidate > nearest)
+                    nearest := candidate
+                    edge := want_high ? zone_high : zone_low
+    edge
 
 
 //
@@ -1107,6 +1153,10 @@ separationOK = not useSeparationFilter or maSeparation >= atrFast * minSeparatio
 zoneBuffer = atrFast * zoneBufferAtrMult
 nearestSupplyAbove = f_nearest_supply_above(current_supply_box, close, zoneBuffer)
 nearestDemandBelow = f_nearest_demand_below(current_demand_box, close, zoneBuffer)
+supplyBandTop = f_nearest_supply_edge(current_supply_box, close, zoneBuffer, true)
+supplyBandBottom = f_nearest_supply_edge(current_supply_box, close, zoneBuffer, false)
+demandBandTop = f_nearest_demand_edge(current_demand_box, close, zoneBuffer, true)
+demandBandBottom = f_nearest_demand_edge(current_demand_box, close, zoneBuffer, false)
 entryRiskDistance = useAtrTargets ? atrTarget * slAtrMult : close * (i_lxLvlSL / 100)
 roomToSupply = na(nearestSupplyAbove) ? na : nearestSupplyAbove - close
 roomToDemand = na(nearestDemandBelow) ? na : close - nearestDemandBelow
@@ -1567,6 +1617,40 @@ plot(
   title      = "short_range_entry_ok",
   editable   = false,
   display    = display.data_window)
+supplyBacktestTopPlot = plot(
+  show_sd_backtest_bands ? supplyBandTop : na,
+  title      = "Backtest Supply Top",
+  color      = supply_outline_color,
+  linewidth  = 1,
+  style      = plot.style_linebr)
+supplyBacktestBottomPlot = plot(
+  show_sd_backtest_bands ? supplyBandBottom : na,
+  title      = "Backtest Supply Bottom",
+  color      = supply_outline_color,
+  linewidth  = 1,
+  style      = plot.style_linebr)
+fill(
+  supplyBacktestTopPlot,
+  supplyBacktestBottomPlot,
+  color      = show_sd_backtest_bands ? supply_color : na,
+  title      = "Backtest Supply Zone")
+demandBacktestTopPlot = plot(
+  show_sd_backtest_bands ? demandBandTop : na,
+  title      = "Backtest Demand Top",
+  color      = demand_outline_color,
+  linewidth  = 1,
+  style      = plot.style_linebr)
+demandBacktestBottomPlot = plot(
+  show_sd_backtest_bands ? demandBandBottom : na,
+  title      = "Backtest Demand Bottom",
+  color      = demand_outline_color,
+  linewidth  = 1,
+  style      = plot.style_linebr)
+fill(
+  demandBacktestTopPlot,
+  demandBacktestBottomPlot,
+  color      = show_sd_backtest_bands ? demand_color : na,
+  title      = "Backtest Demand Zone")
 //#endregion }
 // ——————————— <↑↑↑ G_RISK ↑↑↑>
 
