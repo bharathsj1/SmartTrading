@@ -1,0 +1,621 @@
+//@version=6
+strategy(
+     title = "ICT Gold Liquidity Strategy v4.1 Visual [XAUUSD 5m/15m]",
+     shorttitle = "ICT-GOLD v4.1",
+     overlay = true,
+     initial_capital = 10000,
+     currency = currency.USD,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 10,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     calc_on_order_fills = false,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.0,
+     slippage = 15,
+     margin_long = 5,
+     margin_short = 5,
+     max_boxes_count = 500,
+     max_lines_count = 500,
+     max_labels_count = 500
+)
+
+// =============================================================================
+// PURPOSE AND BACKTEST NOTES
+// =============================================================================
+// Designed for XAUUSD on a 5-minute or 15-minute chart.
+//
+// Entry sequence:
+//   liquidity sweep -> market-structure shift -> quality score -> market entry
+//
+// The strategy deliberately uses confirmed bars. Higher-timeframe values come
+// from the previous completed H1/H4 candles, preventing future-data leakage.
+// The 15-tick slippage default approximates half of a $0.30 XAUUSD spread when
+// the chart's minimum tick is $0.01. Adjust it in Strategy Properties when the
+// broker feed uses a different tick size or spread.
+//
+// Pine cannot read TradingView's economic calendar or the live bid/ask spread.
+// Pause the strategy around high-impact USD events and use realistic costs.
+
+// =============================================================================
+// INPUTS
+// =============================================================================
+const string GROUP_SETUP   = "1. Liquidity Setup"
+const string GROUP_SCORE   = "2. Confirmation Score"
+const string GROUP_SESSION = "3. Kill Zones"
+const string GROUP_RISK    = "4. Risk and Exits"
+const string GROUP_SAFETY  = "5. Safety Filters"
+const string GROUP_VISUAL  = "6. Visuals"
+
+string tradingProfile = input.string("Balanced", "Trading profile", options = ["Selective", "Balanced", "Frequent"], tooltip = "Selective preserves the v3 filtering. Balanced increases genuine sweep setups while retaining H4 bias. Frequent is for research only and removes the HTF and quality-score gates.", group = GROUP_SETUP)
+int liquidityLookback = input.int(20, "Liquidity lookback (bars)", minval = 5, maxval = 100, tooltip = "The prior high/low pool that price must sweep and reclaim.", group = GROUP_SETUP)
+int structureLookback = input.int(5, "Structure lookback (bars)", minval = 2, maxval = 20, tooltip = "Bars used to define the structure level after a sweep.", group = GROUP_SETUP)
+string structureConfirmationMode = input.string("Sweep candle", "Structure confirmation", options = ["Sweep candle", "Prior swing"], tooltip = "Sweep candle confirms above/below the sweep candle itself and is the balanced default. Prior swing is much stricter and can produce very few trades.", group = GROUP_SETUP)
+int confirmationBars = input.int(8, "Maximum bars from sweep to shift", minval = 1, maxval = 20, tooltip = "The setup may finish confirming shortly after the kill zone closes.", group = GROUP_SETUP)
+float invalidationBufferATR = input.float(0.10, "Setup invalidation buffer (ATR)", minval = 0.0, maxval = 1.0, step = 0.05, group = GROUP_SETUP)
+string htfBiasMode = input.string("H4 only", "Confirmed higher-timeframe bias", options = ["H4 only", "H1 + H4", "Off"], tooltip = "H4 only keeps the major trend filter without blocking trades during normal H1 pullbacks.", group = GROUP_SETUP)
+int h1EmaLength = input.int(34, "H1 EMA length", minval = 5, maxval = 200, group = GROUP_SETUP)
+int h4EmaLength = input.int(200, "H4 EMA length", minval = 20, maxval = 400, group = GROUP_SETUP)
+
+int atrLength = input.int(14, "ATR length", minval = 2, group = GROUP_SCORE)
+float minimumDisplacementATR = input.float(0.45, "Displacement body minimum (ATR)", minval = 0.1, maxval = 2.0, step = 0.05, group = GROUP_SCORE)
+float minimumFvgATR = input.float(0.08, "FVG minimum size (ATR)", minval = 0.0, maxval = 1.0, step = 0.01, group = GROUP_SCORE)
+int localEmaLength = input.int(20, "Local trend EMA", minval = 2, maxval = 100, group = GROUP_SCORE)
+int dmiLength = input.int(14, "DI length", minval = 2, group = GROUP_SCORE)
+int adxSmoothing = input.int(14, "ADX smoothing", minval = 2, group = GROUP_SCORE)
+float minimumAdx = input.float(16.0, "Minimum ADX", minval = 5.0, maxval = 50.0, step = 0.5, group = GROUP_SCORE)
+int minimumQualityScore = input.int(2, "Minimum quality score (of 4)", minval = 1, maxval = 4, tooltip = "Balanced default. Scores displacement, a same-direction FVG, DI/ADX strength, and local EMA alignment. Raise to 3 only after confirming there are enough trades.", group = GROUP_SCORE)
+bool requireFairValueGap = input.bool(false, "Require FVG (stricter, fewer trades)", group = GROUP_SCORE)
+
+string sessionTimezone = input.string("America/New_York", "Session timezone", group = GROUP_SESSION)
+bool useLondonWindow = input.bool(true, "Use London window", inline = "London", group = GROUP_SESSION)
+string londonWindow = input.session("0200-0500", "", inline = "London", group = GROUP_SESSION)
+bool useNewYorkAmWindow = input.bool(true, "Use New York AM", inline = "NYAM", group = GROUP_SESSION)
+string newYorkAmWindow = input.session("0830-1130", "", inline = "NYAM", group = GROUP_SESSION)
+bool useNewYorkPmWindow = input.bool(false, "Use New York PM", inline = "NYPM", group = GROUP_SESSION)
+string newYorkPmWindow = input.session("1400-1500", "", inline = "NYPM", group = GROUP_SESSION)
+string mandatoryCloseWindow = input.session("1555-1600", "Mandatory close window", group = GROUP_SESSION)
+
+string exitMode = input.string("Scale out", "Exit mode", options = ["Scale out", "Single target"], group = GROUP_RISK)
+float minimumStopATR = input.float(1.0, "Minimum stop distance (ATR)", minval = 0.25, maxval = 5.0, step = 0.1, group = GROUP_RISK)
+float maximumStopATR = input.float(2.5, "Maximum allowed stop (ATR)", minval = 0.5, maxval = 10.0, step = 0.1, group = GROUP_RISK)
+float stopBufferATR = input.float(0.15, "Stop beyond sweep (ATR)", minval = 0.0, maxval = 1.0, step = 0.05, group = GROUP_RISK)
+float firstTargetR = input.float(1.0, "Scale-out first target (R)", minval = 0.5, maxval = 3.0, step = 0.25, group = GROUP_RISK)
+float secondTargetR = input.float(1.6, "Visual TP2 guide (R)", minval = 0.5, maxval = 10.0, step = 0.1, tooltip = "Display-only management level. It does not change the v4 exit orders or backtest results.", group = GROUP_RISK)
+float firstTargetPercent = input.float(50.0, "Scale-out quantity (%)", minval = 10.0, maxval = 90.0, step = 5.0, group = GROUP_RISK)
+float finalTargetR = input.float(2.2, "TP3 / final target (R)", minval = 0.75, maxval = 10.0, step = 0.1, group = GROUP_RISK)
+float breakEvenOffsetR = input.float(0.03, "Runner breakeven offset (R)", minval = 0.0, maxval = 0.5, step = 0.01, group = GROUP_RISK)
+int maximumTradesPerDay = input.int(2, "Maximum submitted trades per day", minval = 1, maxval = 6, group = GROUP_RISK)
+int maximumLossesPerDay = input.int(2, "Stop after losing positions", minval = 1, maxval = 6, group = GROUP_RISK)
+float maximumDailyLossPercent = input.float(1.0, "Maximum daily loss (%)", minval = 0.1, maxval = 10.0, step = 0.1, group = GROUP_RISK)
+
+bool useEstimatedSpreadFilter = input.bool(true, "Use estimated-spread filter", group = GROUP_SAFETY)
+float estimatedSpreadDollars = input.float(0.30, "Estimated spread in gold-price dollars", minval = 0.0, step = 0.01, group = GROUP_SAFETY)
+float maximumSpreadAsATRPercent = input.float(12.0, "Maximum spread as % of ATR", minval = 1.0, maxval = 50.0, step = 1.0, group = GROUP_SAFETY)
+float maximumSignalRangeATR = input.float(2.5, "Maximum shift-candle range (ATR)", minval = 0.5, maxval = 10.0, step = 0.25, group = GROUP_SAFETY)
+
+bool showTradeForecasts = input.bool(true, "Show entry/target/stop diagrams", group = GROUP_VISUAL)
+int forecastBars = input.int(24, "Diagram width (bars)", minval = 5, maxval = 200, group = GROUP_VISUAL)
+int maximumForecasts = input.int(75, "Historical diagrams to retain", minval = 1, maxval = 75, group = GROUP_VISUAL)
+bool showForecastPriceLabels = input.bool(true, "Show SL/entry/TP price labels", group = GROUP_VISUAL)
+bool showLiquidityLevels = input.bool(false, "Show rolling liquidity levels", group = GROUP_VISUAL)
+bool showSignals = input.bool(true, "Show sweep and entry markers", group = GROUP_VISUAL)
+bool shadeKillZones = input.bool(true, "Shade kill zones", group = GROUP_VISUAL)
+bool showDashboard = input.bool(true, "Show status dashboard", group = GROUP_VISUAL)
+
+// TP2 is display-only and is kept between the two executed targets.
+float boundedSecondTargetR =
+     math.max(
+         math.min(secondTargetR, math.max(firstTargetR, finalTargetR)),
+         math.min(firstTargetR, finalTargetR)
+     )
+
+// The profile changes only the gates that control signal frequency. Selective
+// reproduces v3. Balanced retains the H4 trend and genuine sweep/MSS sequence.
+// Frequent is intentionally loose and should be treated as a research preset.
+int effectiveLiquidityLookback =
+     tradingProfile == "Selective" ? liquidityLookback :
+     tradingProfile == "Balanced" ? math.min(liquidityLookback, 14) :
+     math.min(liquidityLookback, 8)
+int effectiveConfirmationBars =
+     tradingProfile == "Selective" ? confirmationBars :
+     tradingProfile == "Balanced" ? math.max(confirmationBars, 12) :
+     math.max(confirmationBars, 16)
+int effectiveMinimumQualityScore =
+     tradingProfile == "Selective" ? minimumQualityScore :
+     tradingProfile == "Balanced" ? math.min(minimumQualityScore, 1) :
+     0
+float effectiveMaximumStopATR =
+     tradingProfile == "Selective" ? maximumStopATR :
+     tradingProfile == "Balanced" ? math.max(maximumStopATR, 3.0) :
+     math.max(maximumStopATR, 3.5)
+int effectiveMaximumTradesPerDay =
+     tradingProfile == "Selective" ? maximumTradesPerDay :
+     tradingProfile == "Balanced" ? math.max(maximumTradesPerDay, 3) :
+     math.max(maximumTradesPerDay, 4)
+string effectiveHtfBiasMode = tradingProfile == "Frequent" ? "Off" : htfBiasMode
+
+// =============================================================================
+// CONFIRMED INDICATORS
+// =============================================================================
+float atr = ta.atr(atrLength)
+float localEma = ta.ema(close, localEmaLength)
+[plusDI, minusDI, adx] = ta.dmi(dmiLength, adxSmoothing)
+
+// A one-bar offset plus lookahead_on returns the last fully closed HTF value.
+// This is stable on historical and realtime bars and does not repaint.
+float h1Close = request.security(syminfo.tickerid, "60", close[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+float h1Ema = request.security(syminfo.tickerid, "60", ta.ema(close, h1EmaLength)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+float h4Close = request.security(syminfo.tickerid, "240", close[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+float h4Ema = request.security(syminfo.tickerid, "240", ta.ema(close, h4EmaLength)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+bool htfLongBias =
+     effectiveHtfBiasMode == "Off" or
+     (h4Close > h4Ema and (effectiveHtfBiasMode == "H4 only" or h1Close > h1Ema))
+bool htfShortBias =
+     effectiveHtfBiasMode == "Off" or
+     (h4Close < h4Ema and (effectiveHtfBiasMode == "H4 only" or h1Close < h1Ema))
+
+float priorLiquidityHigh = ta.highest(high[1], effectiveLiquidityLookback)
+float priorLiquidityLow = ta.lowest(low[1], effectiveLiquidityLookback)
+bool isSupportedChart = timeframe.isminutes and (timeframe.multiplier == 5 or timeframe.multiplier == 15)
+
+// =============================================================================
+// SESSION STATE
+// =============================================================================
+bool inLondon = useLondonWindow and not na(time(timeframe.period, londonWindow, sessionTimezone))
+bool inNewYorkAm = useNewYorkAmWindow and not na(time(timeframe.period, newYorkAmWindow, sessionTimezone))
+bool effectiveUseNewYorkPm = tradingProfile == "Selective" ? useNewYorkPmWindow : true
+bool inNewYorkPm = effectiveUseNewYorkPm and not na(time(timeframe.period, newYorkPmWindow, sessionTimezone))
+bool inKillZone = inLondon or inNewYorkAm or inNewYorkPm
+bool inMandatoryClose = not na(time(timeframe.period, mandatoryCloseWindow, sessionTimezone))
+int currentWindowId = inLondon ? 1 : inNewYorkAm ? 2 : inNewYorkPm ? 3 : 0
+
+int calendarDayKey =
+     year(time, sessionTimezone) * 10000 +
+     month(time, sessionTimezone) * 100 +
+     dayofmonth(time, sessionTimezone)
+bool newCalendarDay = na(calendarDayKey[1]) or calendarDayKey != calendarDayKey[1]
+int currentWindowKey = calendarDayKey * 10 + currentWindowId
+
+var int lastTradedWindowKey = na
+var int tradesToday = 0
+var int lossesToday = 0
+var int totalSweeps = 0
+var int totalStructureShifts = 0
+var int totalQualifiedShifts = 0
+var int totalRiskBlocked = 0
+var int totalSubmittedTrades = 0
+var float dayStartEquity = strategy.equity
+var float positionStartNetProfit = na
+
+if newCalendarDay
+    tradesToday := 0
+    lossesToday := 0
+    dayStartEquity := strategy.equity
+
+bool positionJustOpened = strategy.position_size != 0 and strategy.position_size[1] == 0
+bool positionJustClosed = strategy.position_size == 0 and strategy.position_size[1] != 0
+
+if positionJustOpened
+    positionStartNetProfit := strategy.netprofit
+
+if positionJustClosed
+    float completedPositionProfit = strategy.netprofit - nz(positionStartNetProfit, strategy.netprofit)
+    if completedPositionProfit < 0
+        lossesToday += 1
+    positionStartNetProfit := na
+
+float dailyReturnPercent = dayStartEquity > 0 ? 100.0 * (strategy.equity - dayStartEquity) / dayStartEquity : 0.0
+bool dailyHalt =
+     tradesToday >= effectiveMaximumTradesPerDay or
+     lossesToday >= maximumLossesPerDay or
+     dailyReturnPercent <= -maximumDailyLossPercent
+
+bool windowAvailable = currentWindowId > 0 and (na(lastTradedWindowKey) or currentWindowKey != lastTradedWindowKey)
+bool spreadAcceptable =
+     not useEstimatedSpreadFilter or
+     estimatedSpreadDollars <= atr * maximumSpreadAsATRPercent / 100.0
+
+// =============================================================================
+// LIQUIDITY SWEEP -> MARKET-STRUCTURE SHIFT
+// =============================================================================
+bool longSweep =
+     isSupportedChart and
+     inKillZone and
+     strategy.position_size == 0 and
+     not dailyHalt and
+     windowAvailable and
+     spreadAcceptable and
+     htfLongBias and
+     low < priorLiquidityLow and
+     close > priorLiquidityLow
+
+bool shortSweep =
+     isSupportedChart and
+     inKillZone and
+     strategy.position_size == 0 and
+     not dailyHalt and
+     windowAvailable and
+     spreadAcceptable and
+     htfShortBias and
+     high > priorLiquidityHigh and
+     close < priorLiquidityHigh
+
+var int setupDirection = 0
+var int sweepBarIndex = na
+var float sweepExtreme = na
+var float sweptLiquidityLevel = na
+var float structureShiftLevel = na
+var int setupWindowKey = na
+var int setupDayKey = na
+
+bool canStartSetup = setupDirection == 0 and strategy.position_size == 0
+
+if canStartSetup
+    if longSweep and not shortSweep
+        setupDirection := 1
+        sweepBarIndex := bar_index
+        sweepExtreme := low
+        sweptLiquidityLevel := priorLiquidityLow
+        structureShiftLevel := structureConfirmationMode == "Sweep candle" ? high : ta.highest(high[1], structureLookback)
+        setupWindowKey := currentWindowKey
+        setupDayKey := calendarDayKey
+        totalSweeps += 1
+    else if shortSweep and not longSweep
+        setupDirection := -1
+        sweepBarIndex := bar_index
+        sweepExtreme := high
+        sweptLiquidityLevel := priorLiquidityHigh
+        structureShiftLevel := structureConfirmationMode == "Sweep candle" ? low : ta.lowest(low[1], structureLookback)
+        setupWindowKey := currentWindowKey
+        setupDayKey := calendarDayKey
+        totalSweeps += 1
+
+bool setupExpired =
+     setupDirection != 0 and
+     (bar_index - sweepBarIndex > effectiveConfirmationBars or dailyHalt or calendarDayKey != setupDayKey)
+
+bool longSetupInvalid =
+     setupDirection == 1 and
+     close < sweepExtreme - atr * invalidationBufferATR
+
+bool shortSetupInvalid =
+     setupDirection == -1 and
+     close > sweepExtreme + atr * invalidationBufferATR
+
+if setupExpired or longSetupInvalid or shortSetupInvalid
+    setupDirection := 0
+    sweepBarIndex := na
+    sweepExtreme := na
+    sweptLiquidityLevel := na
+    structureShiftLevel := na
+    setupWindowKey := na
+    setupDayKey := na
+
+// The shift must occur after the sweep and cross the stored structure level.
+bool longStructureShift =
+     setupDirection == 1 and
+     bar_index > sweepBarIndex and
+     close > structureShiftLevel and
+     close[1] <= structureShiftLevel
+
+bool shortStructureShift =
+     setupDirection == -1 and
+     bar_index > sweepBarIndex and
+     close < structureShiftLevel and
+     close[1] >= structureShiftLevel
+
+if longStructureShift or shortStructureShift
+    totalStructureShifts += 1
+
+// =============================================================================
+// QUALITY SCORE
+// =============================================================================
+float candleBody = math.abs(close - open)
+float candleRange = high - low
+
+bool bullishDisplacement = close > open and candleBody >= atr * minimumDisplacementATR
+bool bearishDisplacement = close < open and candleBody >= atr * minimumDisplacementATR
+bool bullishFvg = low > high[2] and low - high[2] >= atr * minimumFvgATR
+bool bearishFvg = high < low[2] and low[2] - high >= atr * minimumFvgATR
+bool bullishStrength = adx >= minimumAdx and plusDI > minusDI
+bool bearishStrength = adx >= minimumAdx and minusDI > plusDI
+bool bullishLocalTrend = close > localEma and localEma >= localEma[1]
+bool bearishLocalTrend = close < localEma and localEma <= localEma[1]
+
+int longQualityScore =
+     (bullishDisplacement ? 1 : 0) +
+     (bullishFvg ? 1 : 0) +
+     (bullishStrength ? 1 : 0) +
+     (bullishLocalTrend ? 1 : 0)
+
+int shortQualityScore =
+     (bearishDisplacement ? 1 : 0) +
+     (bearishFvg ? 1 : 0) +
+     (bearishStrength ? 1 : 0) +
+     (bearishLocalTrend ? 1 : 0)
+
+bool candleRangeAcceptable = candleRange <= atr * maximumSignalRangeATR
+bool longConfirmation =
+     longStructureShift and
+     longQualityScore >= effectiveMinimumQualityScore and
+     (not requireFairValueGap or bullishFvg) and
+     htfLongBias and
+     candleRangeAcceptable
+
+bool shortConfirmation =
+     shortStructureShift and
+     shortQualityScore >= effectiveMinimumQualityScore and
+     (not requireFairValueGap or bearishFvg) and
+     htfShortBias and
+     candleRangeAcceptable
+
+// =============================================================================
+// ENTRY, POSITION STATE, AND EXITS
+// =============================================================================
+float longStructuralStop = sweepExtreme - atr * stopBufferATR
+float shortStructuralStop = sweepExtreme + atr * stopBufferATR
+float longStopDistance = math.max(atr * minimumStopATR, close - longStructuralStop)
+float shortStopDistance = math.max(atr * minimumStopATR, shortStructuralStop - close)
+bool longRiskAcceptable = longStopDistance > syminfo.mintick and longStopDistance <= atr * effectiveMaximumStopATR
+bool shortRiskAcceptable = shortStopDistance > syminfo.mintick and shortStopDistance <= atr * effectiveMaximumStopATR
+
+bool longSignal = longConfirmation and longRiskAcceptable
+bool shortSignal = shortConfirmation and shortRiskAcceptable
+
+if longConfirmation or shortConfirmation
+    totalQualifiedShifts += 1
+
+if (longConfirmation and not longRiskAcceptable) or (shortConfirmation and not shortRiskAcceptable)
+    totalRiskBlocked += 1
+
+var float activeEntry = na
+var float activeStop = na
+var float activeFirstTarget = na
+var float activeSecondTarget = na
+var float activeFinalTarget = na
+var float activeRisk = na
+var bool firstTargetTouched = false
+
+var array<box> forecastBoxes = array.new<box>()
+var array<line> forecastLines = array.new<line>()
+var array<label> forecastLabels = array.new<label>()
+
+f_addForecast(bool isLong, float entryPrice, float stopPrice, float firstTargetPrice, float secondTargetPrice, float thirdTargetPrice, int score) =>
+    if showTradeForecasts
+        color directionColor = isLong ? color.rgb(0, 155, 119) : color.rgb(214, 69, 65)
+        color targetOneColor = color.rgb(0, 145, 105)
+        color targetTwoColor = color.rgb(30, 170, 112)
+        color targetThreeColor = color.rgb(75, 195, 125)
+        color entryColor = color.rgb(55, 115, 230)
+        int rightEdge = bar_index + forecastBars
+
+        box targetOneBox = box.new(
+             left = bar_index,
+             top = isLong ? firstTargetPrice : entryPrice,
+             right = rightEdge,
+             bottom = isLong ? entryPrice : firstTargetPrice,
+             xloc = xloc.bar_index,
+             border_color = color.new(targetOneColor, 15),
+             bgcolor = color.new(targetOneColor, 80)
+        )
+        box targetTwoBox = box.new(
+             left = bar_index,
+             top = isLong ? secondTargetPrice : firstTargetPrice,
+             right = rightEdge,
+             bottom = isLong ? firstTargetPrice : secondTargetPrice,
+             xloc = xloc.bar_index,
+             border_color = color.new(targetTwoColor, 20),
+             bgcolor = color.new(targetTwoColor, 84)
+        )
+        box targetThreeBox = box.new(
+             left = bar_index,
+             top = isLong ? thirdTargetPrice : secondTargetPrice,
+             right = rightEdge,
+             bottom = isLong ? secondTargetPrice : thirdTargetPrice,
+             xloc = xloc.bar_index,
+             border_color = color.new(targetThreeColor, 25),
+             bgcolor = color.new(targetThreeColor, 88)
+        )
+        box riskBox = box.new(
+             left = bar_index,
+             top = isLong ? entryPrice : stopPrice,
+             right = rightEdge,
+             bottom = isLong ? stopPrice : entryPrice,
+             xloc = xloc.bar_index,
+             border_color = color.new(color.red, 10),
+             bgcolor = color.new(color.red, 82)
+        )
+
+        line stopLine = line.new(bar_index, stopPrice, rightEdge, stopPrice, xloc = xloc.bar_index, color = color.red, width = 2, style = line.style_dashed)
+        line entryLine = line.new(bar_index, entryPrice, rightEdge, entryPrice, xloc = xloc.bar_index, color = entryColor, width = 2)
+        line targetOneLine = line.new(bar_index, firstTargetPrice, rightEdge, firstTargetPrice, xloc = xloc.bar_index, color = targetOneColor, width = 2, style = line.style_dashed)
+        line targetTwoLine = line.new(bar_index, secondTargetPrice, rightEdge, secondTargetPrice, xloc = xloc.bar_index, color = targetTwoColor, width = 2, style = line.style_dashed)
+        line targetThreeLine = line.new(bar_index, thirdTargetPrice, rightEdge, thirdTargetPrice, xloc = xloc.bar_index, color = targetThreeColor, width = 2, style = line.style_dashed)
+
+        label directionLabel = label.new(
+             x = bar_index,
+             y = entryPrice,
+             text = (isLong ? "LONG" : "SHORT") + "\nScore " + str.tostring(score) + "/4",
+             xloc = xloc.bar_index,
+             style = isLong ? label.style_label_up : label.style_label_down,
+             color = directionColor,
+             textcolor = color.white,
+             size = size.small
+        )
+
+        array.push(forecastBoxes, targetOneBox)
+        array.push(forecastBoxes, targetTwoBox)
+        array.push(forecastBoxes, targetThreeBox)
+        array.push(forecastBoxes, riskBox)
+        array.push(forecastLines, stopLine)
+        array.push(forecastLines, entryLine)
+        array.push(forecastLines, targetOneLine)
+        array.push(forecastLines, targetTwoLine)
+        array.push(forecastLines, targetThreeLine)
+        array.push(forecastLabels, directionLabel)
+
+        if showForecastPriceLabels
+            label stopLabel = label.new(rightEdge, stopPrice, "SL  " + str.tostring(stopPrice, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.red, textcolor = color.white, size = size.tiny)
+            label entryLabel = label.new(rightEdge, entryPrice, "ENTRY  " + str.tostring(entryPrice, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = entryColor, textcolor = color.white, size = size.tiny)
+            label targetOneLabel = label.new(rightEdge, firstTargetPrice, "TP1  " + str.tostring(firstTargetPrice, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = targetOneColor, textcolor = color.white, size = size.tiny)
+            label targetTwoLabel = label.new(rightEdge, secondTargetPrice, "TP2 GUIDE  " + str.tostring(secondTargetPrice, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = targetTwoColor, textcolor = color.white, size = size.tiny)
+            label targetThreeLabel = label.new(rightEdge, thirdTargetPrice, "TP3  " + str.tostring(thirdTargetPrice, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = targetThreeColor, textcolor = color.black, size = size.tiny)
+            array.push(forecastLabels, stopLabel)
+            array.push(forecastLabels, entryLabel)
+            array.push(forecastLabels, targetOneLabel)
+            array.push(forecastLabels, targetTwoLabel)
+            array.push(forecastLabels, targetThreeLabel)
+
+        while array.size(forecastBoxes) > maximumForecasts * 4
+            box.delete(array.shift(forecastBoxes))
+        while array.size(forecastLines) > maximumForecasts * 5
+            line.delete(array.shift(forecastLines))
+        while array.size(forecastLabels) > maximumForecasts * 6
+            label.delete(array.shift(forecastLabels))
+
+if longSignal and strategy.position_size == 0
+    activeEntry := close
+    activeRisk := longStopDistance
+    activeStop := activeEntry - activeRisk
+    activeFirstTarget := activeEntry + activeRisk * firstTargetR
+    activeSecondTarget := activeEntry + activeRisk * boundedSecondTargetR
+    activeFinalTarget := activeEntry + activeRisk * finalTargetR
+    firstTargetTouched := false
+    strategy.entry("Long", strategy.long)
+    if exitMode == "Scale out"
+        strategy.exit("Long TP1", from_entry = "Long", stop = activeStop, limit = activeFirstTarget, qty_percent = firstTargetPercent)
+        strategy.exit("Long runner", from_entry = "Long", stop = activeStop, limit = activeFinalTarget, qty_percent = 100.0 - firstTargetPercent)
+    else
+        strategy.exit("Long target", from_entry = "Long", stop = activeStop, limit = activeFinalTarget)
+    f_addForecast(true, activeEntry, activeStop, activeFirstTarget, activeSecondTarget, activeFinalTarget, longQualityScore)
+    tradesToday += 1
+    totalSubmittedTrades += 1
+    lastTradedWindowKey := setupWindowKey
+    setupDirection := 0
+
+if shortSignal and strategy.position_size == 0
+    activeEntry := close
+    activeRisk := shortStopDistance
+    activeStop := activeEntry + activeRisk
+    activeFirstTarget := activeEntry - activeRisk * firstTargetR
+    activeSecondTarget := activeEntry - activeRisk * boundedSecondTargetR
+    activeFinalTarget := activeEntry - activeRisk * finalTargetR
+    firstTargetTouched := false
+    strategy.entry("Short", strategy.short)
+    if exitMode == "Scale out"
+        strategy.exit("Short TP1", from_entry = "Short", stop = activeStop, limit = activeFirstTarget, qty_percent = firstTargetPercent)
+        strategy.exit("Short runner", from_entry = "Short", stop = activeStop, limit = activeFinalTarget, qty_percent = 100.0 - firstTargetPercent)
+    else
+        strategy.exit("Short target", from_entry = "Short", stop = activeStop, limit = activeFinalTarget)
+    f_addForecast(false, activeEntry, activeStop, activeFirstTarget, activeSecondTarget, activeFinalTarget, shortQualityScore)
+    tradesToday += 1
+    totalSubmittedTrades += 1
+    lastTradedWindowKey := setupWindowKey
+    setupDirection := 0
+
+if strategy.position_size > 0 and not na(activeFirstTarget)
+    if high >= activeFirstTarget
+        firstTargetTouched := true
+    float longRunnerStop = firstTargetTouched ? math.max(activeStop, activeEntry + activeRisk * breakEvenOffsetR) : activeStop
+    if exitMode == "Scale out"
+        strategy.exit("Long TP1", from_entry = "Long", stop = activeStop, limit = activeFirstTarget, qty_percent = firstTargetPercent)
+        strategy.exit("Long runner", from_entry = "Long", stop = longRunnerStop, limit = activeFinalTarget, qty_percent = 100.0 - firstTargetPercent)
+    else
+        strategy.exit("Long target", from_entry = "Long", stop = activeStop, limit = activeFinalTarget)
+
+if strategy.position_size < 0 and not na(activeFirstTarget)
+    if low <= activeFirstTarget
+        firstTargetTouched := true
+    float shortRunnerStop = firstTargetTouched ? math.min(activeStop, activeEntry - activeRisk * breakEvenOffsetR) : activeStop
+    if exitMode == "Scale out"
+        strategy.exit("Short TP1", from_entry = "Short", stop = activeStop, limit = activeFirstTarget, qty_percent = firstTargetPercent)
+        strategy.exit("Short runner", from_entry = "Short", stop = shortRunnerStop, limit = activeFinalTarget, qty_percent = 100.0 - firstTargetPercent)
+    else
+        strategy.exit("Short target", from_entry = "Short", stop = activeStop, limit = activeFinalTarget)
+
+if inMandatoryClose and strategy.position_size != 0
+    strategy.close_all(comment = "Mandatory close")
+
+if positionJustClosed
+    activeEntry := na
+    activeStop := na
+    activeFirstTarget := na
+    activeSecondTarget := na
+    activeFinalTarget := na
+    activeRisk := na
+    firstTargetTouched := false
+
+// A failed shift consumes the setup. Waiting for a second cross tends to chase.
+if (longStructureShift and not longSignal) or (shortStructureShift and not shortSignal)
+    setupDirection := 0
+    sweepBarIndex := na
+    sweepExtreme := na
+    sweptLiquidityLevel := na
+    structureShiftLevel := na
+    setupWindowKey := na
+    setupDayKey := na
+
+// =============================================================================
+// VISUALS AND ALERTS
+// =============================================================================
+plot(h1Ema, "Confirmed H1 EMA", color = color.orange, linewidth = 2)
+plot(h4Ema, "Confirmed H4 EMA", color = color.blue, linewidth = 2)
+plot(localEma, "M5 EMA", color = color.new(color.purple, 25))
+plot(showLiquidityLevels ? priorLiquidityHigh : na, "Prior liquidity high", color = color.new(color.red, 65), style = plot.style_linebr)
+plot(showLiquidityLevels ? priorLiquidityLow : na, "Prior liquidity low", color = color.new(color.teal, 65), style = plot.style_linebr)
+plot(setupDirection != 0 ? structureShiftLevel : na, "Required structure shift", color = color.yellow, linewidth = 2, style = plot.style_linebr)
+
+color sessionShade = inLondon ? color.new(color.aqua, 91) : inNewYorkAm ? color.new(color.blue, 91) : inNewYorkPm ? color.new(color.purple, 91) : na
+bgcolor(shadeKillZones ? sessionShade : na, title = "Kill-zone shading")
+
+plotshape(showSignals and longSweep, title = "Bullish liquidity sweep", text = "SWP", style = shape.circle, location = location.belowbar, color = color.new(color.teal, 0), textcolor = color.white, size = size.tiny)
+plotshape(showSignals and shortSweep, title = "Bearish liquidity sweep", text = "SWP", style = shape.circle, location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, size = size.tiny)
+plotshape(showSignals and longStructureShift, title = "Bullish structure shift", text = "MSS", style = shape.triangleup, location = location.belowbar, color = color.yellow, textcolor = color.black, size = size.tiny)
+plotshape(showSignals and shortStructureShift, title = "Bearish structure shift", text = "MSS", style = shape.triangledown, location = location.abovebar, color = color.yellow, textcolor = color.black, size = size.tiny)
+plotshape(showSignals and longSignal, title = "Long submitted", text = "LONG", style = shape.labelup, location = location.belowbar, color = color.rgb(0, 155, 119), textcolor = color.white, size = size.small)
+plotshape(showSignals and shortSignal, title = "Short submitted", text = "SHORT", style = shape.labeldown, location = location.abovebar, color = color.rgb(214, 69, 65), textcolor = color.white, size = size.small)
+
+alertcondition(longSignal, title = "ICT Gold LONG", message = "ICT Gold LONG: sweep, structure shift, and quality score confirmed.")
+alertcondition(shortSignal, title = "ICT Gold SHORT", message = "ICT Gold SHORT: sweep, structure shift, and quality score confirmed.")
+
+var table dashboard = table.new(position.top_right, 2, 13, border_width = 1)
+
+if barstate.islast
+    float grossLossMagnitude = math.abs(strategy.grossloss)
+    float profitFactor = grossLossMagnitude > 0 ? strategy.grossprofit / grossLossMagnitude : na
+    float winRate = strategy.closedtrades > 0 ? 100.0 * strategy.wintrades / strategy.closedtrades : na
+    string setupStatus = setupDirection == 1 ? "BULLISH ARMED" : setupDirection == -1 ? "BEARISH ARMED" : "SCANNING"
+    string activeWindow = inLondon ? "LONDON" : inNewYorkAm ? "NY AM" : inNewYorkPm ? "NY PM" : "CLOSED"
+    color statusColor = isSupportedChart ? color.rgb(0, 155, 119) : color.rgb(214, 69, 65)
+
+    table.cell(dashboard, 0, 0, "ICT-GOLD v4.1", text_color = color.white, bgcolor = color.rgb(35, 75, 145))
+    table.cell(dashboard, 1, 0, isSupportedChart ? (timeframe.multiplier == 5 ? "M5 OK" : "M15 OK") : "USE 5m/15m", text_color = color.white, bgcolor = statusColor)
+    table.cell(dashboard, 0, 1, "Window")
+    table.cell(dashboard, 1, 1, activeWindow)
+    table.cell(dashboard, 0, 2, "Status")
+    table.cell(dashboard, 1, 2, setupStatus)
+    table.cell(dashboard, 0, 3, "HTF bias")
+    table.cell(dashboard, 1, 3, htfLongBias ? "LONG" : htfShortBias ? "SHORT" : "MIXED")
+    table.cell(dashboard, 0, 4, "Trades today")
+    table.cell(dashboard, 1, 4, str.tostring(tradesToday) + " / " + str.tostring(effectiveMaximumTradesPerDay))
+    table.cell(dashboard, 0, 5, "Losses today")
+    table.cell(dashboard, 1, 5, str.tostring(lossesToday) + " / " + str.tostring(maximumLossesPerDay))
+    table.cell(dashboard, 0, 6, "Win rate")
+    table.cell(dashboard, 1, 6, na(winRate) ? "N/A" : str.tostring(winRate, "#.0") + "%")
+    table.cell(dashboard, 0, 7, "Profit factor")
+    table.cell(dashboard, 1, 7, na(profitFactor) ? "N/A" : str.tostring(profitFactor, "#.###"))
+    table.cell(dashboard, 0, 8, "Daily return")
+    table.cell(dashboard, 1, 8, str.tostring(dailyReturnPercent, "#.##") + "%")
+    table.cell(dashboard, 0, 9, "Sweeps / shifts")
+    table.cell(dashboard, 1, 9, str.tostring(totalSweeps) + " / " + str.tostring(totalStructureShifts))
+    table.cell(dashboard, 0, 10, "Submitted trades")
+    table.cell(dashboard, 1, 10, str.tostring(totalSubmittedTrades))
+    table.cell(dashboard, 0, 11, "Qualified / risk blocked")
+    table.cell(dashboard, 1, 11, str.tostring(totalQualifiedShifts) + " / " + str.tostring(totalRiskBlocked))
+    table.cell(dashboard, 0, 12, "Profile")
+    table.cell(dashboard, 1, 12, tradingProfile)
+
+    if not showDashboard
+        table.clear(dashboard, 0, 0, 1, 12)

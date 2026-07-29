@@ -116,8 +116,11 @@ f_check_overlapping(new_poi, box_array, atrValue) =>
     okay_to_draw = true
 
     for i = 0 to array.size(box_array) - 1
-        top = box.get_top(array.get(box_array, i))
-        bottom = box.get_bottom(array.get(box_array, i))
+        zone_box = array.get(box_array, i)
+        if na(zone_box)
+            continue
+        top = box.get_top(zone_box)
+        bottom = box.get_bottom(zone_box)
         poi = (top + bottom) / 2
 
         upper_boundary = poi + atr_threshold
@@ -173,12 +176,16 @@ f_sd_to_bos(box_array, bos_array, label_array, zone_type) =>
 
     if zone_type == 1
         for i = 0 to array.size(box_array) - 1
-            level_to_break = box.get_top(array.get(box_array,i))
+            zone_box = array.get(box_array, i)
+            if na(zone_box)
+                continue
+            poi_box = array.get(label_array, i)
+            level_to_break = box.get_top(zone_box)
             // if ta.crossover(close, level_to_break)
             if close >= level_to_break
-                copied_box = box.copy(array.get(box_array,i))
+                copied_box = box.copy(zone_box)
                 f_array_add_pop(bos_array, copied_box)
-                mid = (box.get_top(array.get(box_array,i)) + box.get_bottom(array.get(box_array,i))) / 2
+                mid = (box.get_top(zone_box) + box.get_bottom(zone_box)) / 2
                 box.set_top(array.get(bos_array,0), mid)
                 box.set_bottom(array.get(bos_array,0), mid)
                 box.set_extend( array.get(bos_array,0), extend.none)
@@ -188,18 +195,25 @@ f_sd_to_bos(box_array, bos_array, label_array, zone_type) =>
                 box.set_text_size( array.get(bos_array,0), size.small)
                 box.set_text_halign( array.get(bos_array,0), text.align_center)
                 box.set_text_valign( array.get(bos_array,0), text.align_center)
-                box.delete(array.get(box_array, i))
-                box.delete(array.get(label_array, i))
+                box.delete(zone_box)
+                if not na(poi_box)
+                    box.delete(poi_box)
+                array.set(box_array, i, na)
+                array.set(label_array, i, na)
 
 
     if zone_type == -1
         for i = 0 to array.size(box_array) - 1
-            level_to_break = box.get_bottom(array.get(box_array,i))
+            zone_box = array.get(box_array, i)
+            if na(zone_box)
+                continue
+            poi_box = array.get(label_array, i)
+            level_to_break = box.get_bottom(zone_box)
             // if ta.crossunder(close, level_to_break)
             if close <= level_to_break
-                copied_box = box.copy(array.get(box_array,i))
+                copied_box = box.copy(zone_box)
                 f_array_add_pop(bos_array, copied_box)
-                mid = (box.get_top(array.get(box_array,i)) + box.get_bottom(array.get(box_array,i))) / 2
+                mid = (box.get_top(zone_box) + box.get_bottom(zone_box)) / 2
                 box.set_top(array.get(bos_array,0), mid)
                 box.set_bottom(array.get(bos_array,0), mid)
                 box.set_extend( array.get(bos_array,0), extend.none)
@@ -209,8 +223,11 @@ f_sd_to_bos(box_array, bos_array, label_array, zone_type) =>
                 box.set_text_size( array.get(bos_array,0), size.small)
                 box.set_text_halign( array.get(bos_array,0), text.align_center)
                 box.set_text_valign( array.get(bos_array,0), text.align_center)
-                box.delete(array.get(box_array, i))
-                box.delete(array.get(label_array, i))
+                box.delete(zone_box)
+                if not na(poi_box)
+                    box.delete(poi_box)
+                array.set(box_array, i, na)
+                array.set(label_array, i, na)
 
 
 
@@ -218,7 +235,9 @@ f_sd_to_bos(box_array, bos_array, label_array, zone_type) =>
 f_extend_box_endpoint(box_array) =>
 
     for i = 0 to array.size(box_array) - 1
-        box.set_right(array.get(box_array, i), bar_index + 100)
+        zone_box = array.get(box_array, i)
+        if not na(zone_box)
+            box.set_right(zone_box, bar_index + 100)
 
 //      FUNCTION TO FIND NEAREST SUPPLY ABOVE PRICE
 f_nearest_supply_above(box_array, price, buffer) =>
@@ -299,6 +318,16 @@ f_nearest_demand_edge(box_array, price, buffer, want_high) =>
                     nearest := candidate
                     edge := want_high ? zone_high : zone_low
     edge
+
+//      FUNCTION TO CONFIRM A SUPPLY/DEMAND REJECTION ON A LOWER TIMEFRAME CANDLE
+f_zone_candle_confirmation(_zoneHigh, _zoneLow, _buffer, _wantLong, _minCloseLocation, _o, _h, _l, _c) =>
+    _range = math.max(_h - _l, syminfo.mintick)
+    _closeLocation = (_c - _l) / _range
+    _mid = math.avg(_zoneHigh, _zoneLow)
+    _touch = not na(_zoneHigh) and not na(_zoneLow) and _l <= _zoneHigh + _buffer and _h >= _zoneLow - _buffer
+    _bullConfirm = _c > _o and _c >= _mid and _closeLocation >= _minCloseLocation
+    _bearConfirm = _c < _o and _c <= _mid and _closeLocation <= 1.0 - _minCloseLocation
+    _touch and (_wantLong ? _bullConfirm : _bearConfirm)
 
 
 //
@@ -961,6 +990,14 @@ useRangeEntryFilter = input.bool(true, "Avoid Mid-Range Chop Entries", group = G
 rangeFilterLen = input.int(18, "Range Filter Length", minval = 5, group = G_RISK)
 maxChopRangeAtr = input.float(3.0, "Max Chop Range ATR", minval = 0.5, step = 0.1, group = G_RISK)
 rangeEntryEdgePct = input.float(0.35, "Range Entry Edge %", minval = 0.05, maxval = 0.5, step = 0.05, group = G_RISK)
+requireSdZoneEntry = input.bool(true, "Require Demand/Supply Entry Zone", group = G_RISK)
+sdConfirmTf = input.timeframe("5", "Demand/Supply Confirmation TF", group = G_RISK)
+sdConfirmLookback = input.int(3, "5m Confirmation Candles", minval = 1, maxval = 3, group = G_RISK)
+sdConfirmCloseStrength = input.float(0.60, "5m Confirmation Close Strength", minval = 0.50, maxval = 0.90, step = 0.05, group = G_RISK)
+useSdPrimaryEntries = input.bool(true, "Use Supply/Demand As Primary Entry", group = G_RISK)
+useLegacyFiltersWithSd = input.bool(false, "Use Legacy Filters With S/D", group = G_RISK)
+useSdConfirmationAsTrigger = input.bool(true, "Allow Zone Confirmation Entry Trigger", group = G_RISK)
+requireCurrentChartZoneTouch = input.bool(false, "Require Current Chart Zone Touch", group = G_RISK)
 
 atrTarget = ta.atr(atrTargetLen)
 
@@ -1157,6 +1194,28 @@ supplyBandTop = f_nearest_supply_edge(current_supply_box, close, zoneBuffer, tru
 supplyBandBottom = f_nearest_supply_edge(current_supply_box, close, zoneBuffer, false)
 demandBandTop = f_nearest_demand_edge(current_demand_box, close, zoneBuffer, true)
 demandBandBottom = f_nearest_demand_edge(current_demand_box, close, zoneBuffer, false)
+demandZoneHigh = math.max(demandBandTop, demandBandBottom)
+demandZoneLow = math.min(demandBandTop, demandBandBottom)
+supplyZoneHigh = math.max(supplyBandTop, supplyBandBottom)
+supplyZoneLow = math.min(supplyBandTop, supplyBandBottom)
+longDemandZoneTouched = not na(demandZoneHigh) and low <= demandZoneHigh + zoneBuffer and high >= demandZoneLow - zoneBuffer
+shortSupplyZoneTouched = not na(supplyZoneLow) and high >= supplyZoneLow - zoneBuffer and low <= supplyZoneHigh + zoneBuffer
+[sdConfirmOpen0, sdConfirmHigh0, sdConfirmLow0, sdConfirmClose0, sdConfirmOpen1, sdConfirmHigh1, sdConfirmLow1, sdConfirmClose1, sdConfirmOpen2, sdConfirmHigh2, sdConfirmLow2, sdConfirmClose2] = request.security(
+  syminfo.tickerid,
+  sdConfirmTf,
+  [open, high, low, close, open[1], high[1], low[1], close[1], open[2], high[2], low[2], close[2]],
+  gaps = barmerge.gaps_off,
+  lookahead = barmerge.lookahead_off)
+long5mDemandConfirm0 = f_zone_candle_confirmation(demandZoneHigh, demandZoneLow, zoneBuffer, true, sdConfirmCloseStrength, sdConfirmOpen0, sdConfirmHigh0, sdConfirmLow0, sdConfirmClose0)
+long5mDemandConfirm1 = f_zone_candle_confirmation(demandZoneHigh, demandZoneLow, zoneBuffer, true, sdConfirmCloseStrength, sdConfirmOpen1, sdConfirmHigh1, sdConfirmLow1, sdConfirmClose1)
+long5mDemandConfirm2 = f_zone_candle_confirmation(demandZoneHigh, demandZoneLow, zoneBuffer, true, sdConfirmCloseStrength, sdConfirmOpen2, sdConfirmHigh2, sdConfirmLow2, sdConfirmClose2)
+short5mSupplyConfirm0 = f_zone_candle_confirmation(supplyZoneHigh, supplyZoneLow, zoneBuffer, false, sdConfirmCloseStrength, sdConfirmOpen0, sdConfirmHigh0, sdConfirmLow0, sdConfirmClose0)
+short5mSupplyConfirm1 = f_zone_candle_confirmation(supplyZoneHigh, supplyZoneLow, zoneBuffer, false, sdConfirmCloseStrength, sdConfirmOpen1, sdConfirmHigh1, sdConfirmLow1, sdConfirmClose1)
+short5mSupplyConfirm2 = f_zone_candle_confirmation(supplyZoneHigh, supplyZoneLow, zoneBuffer, false, sdConfirmCloseStrength, sdConfirmOpen2, sdConfirmHigh2, sdConfirmLow2, sdConfirmClose2)
+long5mDemandConfirmation = (sdConfirmLookback >= 1 and long5mDemandConfirm0) or (sdConfirmLookback >= 2 and long5mDemandConfirm1) or (sdConfirmLookback >= 3 and long5mDemandConfirm2)
+short5mSupplyConfirmation = (sdConfirmLookback >= 1 and short5mSupplyConfirm0) or (sdConfirmLookback >= 2 and short5mSupplyConfirm1) or (sdConfirmLookback >= 3 and short5mSupplyConfirm2)
+longSdEntryOK = not requireSdZoneEntry or (long5mDemandConfirmation and (not requireCurrentChartZoneTouch or longDemandZoneTouched))
+shortSdEntryOK = not requireSdZoneEntry or (short5mSupplyConfirmation and (not requireCurrentChartZoneTouch or shortSupplyZoneTouched))
 entryRiskDistance = useAtrTargets ? atrTarget * slAtrMult : close * (i_lxLvlSL / 100)
 roomToSupply = na(nearestSupplyAbove) ? na : nearestSupplyAbove - close
 roomToDemand = na(nearestDemandBelow) ? na : close - nearestDemandBelow
@@ -1177,10 +1236,18 @@ longRangeEntryOK = not useRangeEntryFilter or not rangeIsChoppy or longAtRangeEd
 shortRangeEntryOK = not useRangeEntryFilter or not rangeIsChoppy or shortAtRangeEdge or shortRangeBreakdown
 allowLongTradeType  = tradeType == 'LONG' or tradeType == 'BOTH'
 allowShortTradeType = tradeType == 'SHORT' or tradeType == 'BOTH'
-longSignalAllowed   = allowLongTradeType and allowLongTrend and allowLongSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and longStructureRoomOK and longRangeEntryOK and canTrade
-shortSignalAllowed  = allowShortTradeType and allowShortTrend and allowShortSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and shortStructureRoomOK and shortRangeEntryOK and canTrade
-leEntrySignal = leTrigger and longSignalAllowed and condition[1] <= 0.0
-seEntrySignal = seTrigger and shortSignalAllowed and condition[1] >= 0.0
+longLegacyFiltersOK = allowLongTrend and allowLongSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and longStructureRoomOK and longRangeEntryOK
+shortLegacyFiltersOK = allowShortTrend and allowShortSlope and volatilityOK and trendStrengthOK and spikeFilterOK and separationOK and shortStructureRoomOK and shortRangeEntryOK
+longSignalAllowed = useSdPrimaryEntries ? (allowLongTradeType and longSdEntryOK and canTrade and (not useLegacyFiltersWithSd or longLegacyFiltersOK)) : (allowLongTradeType and longLegacyFiltersOK and longSdEntryOK and canTrade)
+shortSignalAllowed = useSdPrimaryEntries ? (allowShortTradeType and shortSdEntryOK and canTrade and (not useLegacyFiltersWithSd or shortLegacyFiltersOK)) : (allowShortTradeType and shortLegacyFiltersOK and shortSdEntryOK and canTrade)
+longOccBias = closeSeriesAlt > openSeriesAlt
+shortOccBias = closeSeriesAlt < openSeriesAlt
+longSdTrigger = useSdConfirmationAsTrigger and longSdEntryOK and longOccBias
+shortSdTrigger = useSdConfirmationAsTrigger and shortSdEntryOK and shortOccBias
+longEntryTrigger = useSdPrimaryEntries ? longSdEntryOK : (leTrigger or longSdTrigger)
+shortEntryTrigger = useSdPrimaryEntries ? shortSdEntryOK : (seTrigger or shortSdTrigger)
+leEntrySignal = longEntryTrigger and longSignalAllowed and condition[1] <= 0.0
+seEntrySignal = shortEntryTrigger and shortSignalAllowed and condition[1] >= 0.0
 
 //<entry & exit orders>
 entryLine   := leEntrySignal ? close :
@@ -1615,6 +1682,66 @@ plot(
 plot(
   shortRangeEntryOK ? 1 : 0,
   title      = "short_range_entry_ok",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  longDemandZoneTouched ? 1 : 0,
+  title      = "long_demand_zone_touched",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  shortSupplyZoneTouched ? 1 : 0,
+  title      = "short_supply_zone_touched",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  long5mDemandConfirmation ? 1 : 0,
+  title      = "long_5m_demand_confirmation",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  short5mSupplyConfirmation ? 1 : 0,
+  title      = "short_5m_supply_confirmation",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  longSdEntryOK ? 1 : 0,
+  title      = "long_sd_entry_ok",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  shortSdEntryOK ? 1 : 0,
+  title      = "short_sd_entry_ok",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  longSdTrigger ? 1 : 0,
+  title      = "long_sd_trigger",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  shortSdTrigger ? 1 : 0,
+  title      = "short_sd_trigger",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  longEntryTrigger ? 1 : 0,
+  title      = "long_entry_trigger",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  shortEntryTrigger ? 1 : 0,
+  title      = "short_entry_trigger",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  longSignalAllowed ? 1 : 0,
+  title      = "long_signal_allowed",
+  editable   = false,
+  display    = display.data_window)
+plot(
+  shortSignalAllowed ? 1 : 0,
+  title      = "short_signal_allowed",
   editable   = false,
   display    = display.data_window)
 supplyBacktestTopPlot = plot(
