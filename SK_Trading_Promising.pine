@@ -1,0 +1,512 @@
+//@version=6
+strategy(
+     title = "SK Live-Style Gold Strategy v2.8 Sessions [Independent]",
+     shorttitle = "SK-Live v2.8",
+     overlay = true,
+     initial_capital = 10000,
+     currency = currency.USD,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 10,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     calc_on_order_fills = true,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.0,
+     slippage = 15,
+     margin_long = 5,
+     margin_short = 5,
+     max_boxes_count = 500,
+     max_lines_count = 500,
+     max_labels_count = 500
+)
+
+// =============================================================================
+// INDEPENDENT, EVIDENCE-BASED APPROXIMATION
+// =============================================================================
+// This is not the private source code of SK Analysis Pro.
+//
+// The defaults reproduce the observable rules in the supplied XAUUSD 5-minute
+// livestream screenshot:
+//   1. Confirmed ATR direction plus a prior-range structure break produces
+//      the primary Buy/Sell; same-bias ATR pullbacks allow continuation trades.
+//   2. Stop loss is the PREVIOUS candle's low/high.
+//   3. Default targets are matched to the actual Entry-to-SL risk:
+//        TP1 = 1R, TP2 = 2R, TP3 = 3R. Strong relative volume can extend
+//        TP2/TP3 up to the configured cap. Fixed $3/$9/$13 remains optional.
+//   4. The responsive live-structure and EMA checks are part of the default
+//      entry model. Pivot structure, HTF, FVG and volume remain optional extras.
+//
+// Signals execute only after candle close. No future-looking HTF values or
+// unconfirmed pivots are used.
+
+// =============================================================================
+// INPUTS
+// =============================================================================
+const string GROUP_SIGNAL  = "1. Live-Style Signal Engine"
+const string GROUP_CONTEXT = "2. Optional Context Filters"
+const string GROUP_RISK    = "3. Previous-Candle Stop"
+const string GROUP_TARGET  = "4. Targets and Exits"
+const string GROUP_SESSION = "5. Trading Sessions"
+const string GROUP_VISUAL  = "6. Visuals"
+
+int atrLength = input.int(10, "ATR length", minval = 2, maxval = 100, group = GROUP_SIGNAL)
+float atrSensitivity = input.float(1.0, "ATR trailing sensitivity", minval = 0.1, maxval = 10.0, step = 0.1, tooltip = "Lower values react faster and produce more reversals. Start with 1.0 on XAUUSD 5m.", group = GROUP_SIGNAL)
+string signalSourceMode = input.string("Close", "Signal source", options = ["Close", "Heikin-Ashi close"], tooltip = "The displayed chart remains standard candles. Heikin-Ashi can be used internally as a smoother signal source.", group = GROUP_SIGNAL)
+string entryModel = input.string("Live structure", "Entry model", options = ["Live structure", "ATR reversal only"], tooltip = "Live structure waits for a confirmed rolling market-structure break and then permits same-direction continuation entries after a genuine ATR pullback.", group = GROUP_SIGNAL)
+int directionConfirmationBars = input.int(2, "Direction confirmation closes", minval = 1, maxval = 10, tooltip = "The ATR direction must remain unchanged for this many completed candles before a new trade can be called.", group = GROUP_SIGNAL)
+int entryCooldownBars = input.int(5, "Minimum bars between entries", minval = 0, maxval = 100, group = GROUP_SIGNAL)
+int postExitCooldownBars = input.int(3, "Bars to re-arm after a completed trade", minval = 0, maxval = 100, tooltip = "Prevents immediate re-entry after TP3, stop-loss or the mandatory close.", group = GROUP_SIGNAL)
+bool reverseOnOppositeSignal = input.bool(false, "Reverse an active trade on opposite signal", tooltip = "Disabled by default: an active plan stays active until its targets, stop or mandatory close. Enable only if you deliberately want rapid reversals.", group = GROUP_SIGNAL)
+int liveStructureLookback = input.int(8, "Live structure lookback", minval = 3, maxval = 50, tooltip = "A close must break the prior range to establish a new trading direction.", group = GROUP_SIGNAL)
+int liveTrendEmaLength = input.int(20, "Live trend EMA", minval = 5, maxval = 200, tooltip = "Entries must close on the correct side of this EMA. This blocks many countertrend ATR flips.", group = GROUP_SIGNAL)
+
+bool useStructureFilter = input.bool(false, "Require swing-structure direction", group = GROUP_CONTEXT)
+int swingLength = input.int(5, "Confirmed swing length", minval = 2, maxval = 20, group = GROUP_CONTEXT)
+bool useHigherTimeframeFilter = input.bool(false, "Require completed HTF EMA direction", group = GROUP_CONTEXT)
+string higherTimeframe = input.timeframe("60", "Higher timeframe", group = GROUP_CONTEXT)
+int higherTimeframeEmaLength = input.int(100, "HTF EMA length", minval = 10, maxval = 400, group = GROUP_CONTEXT)
+bool useRecentFvgFilter = input.bool(false, "Require recent same-direction FVG", group = GROUP_CONTEXT)
+int fvgValidBars = input.int(20, "FVG validity (bars)", minval = 1, maxval = 200, group = GROUP_CONTEXT)
+float minimumFvgATR = input.float(0.05, "Minimum FVG size (ATR)", minval = 0.0, maxval = 2.0, step = 0.01, group = GROUP_CONTEXT)
+bool useVolumeFilter = input.bool(false, "Require directional relative volume", group = GROUP_CONTEXT)
+int volumeLookback = input.int(20, "Volume average length", minval = 5, maxval = 200, group = GROUP_CONTEXT)
+float minimumRelativeVolume = input.float(1.0, "Minimum volume (x average)", minval = 0.1, maxval = 5.0, step = 0.05, group = GROUP_CONTEXT)
+
+float previousCandleStopBuffer = input.float(0.0, "Buffer beyond previous candle ($)", minval = 0.0, maxval = 20.0, step = 0.1, tooltip = "The live screenshot shows no visible buffer, so the default is zero.", group = GROUP_RISK)
+bool useMaximumStopFilter = input.bool(true, "Reject abnormally wide previous-candle stops", group = GROUP_RISK)
+float maximumStopATR = input.float(2.0, "Maximum stop distance (ATR)", minval = 0.5, maxval = 20.0, step = 0.25, tooltip = "Entries are rejected when the previous-candle stop is farther than this ATR multiple. The 2 ATR default prevents very large signal candles from producing poor risk/reward.", group = GROUP_RISK)
+
+string targetCalculationMode = input.string("Volume-adjusted risk", "Target calculation", options = ["Volume-adjusted risk", "Risk multiples", "Fixed gold points"], tooltip = "Volume-adjusted risk uses the actual Entry-to-SL distance. TP1 remains 1R while strong relative volume can extend TP2 and TP3.", group = GROUP_TARGET)
+float fixedTp1Points = input.float(3.0, "Fixed TP1 distance ($)", minval = 0.1, maxval = 100.0, step = 0.1, group = GROUP_TARGET)
+float fixedTp2Points = input.float(9.0, "Fixed TP2 distance ($)", minval = 0.1, maxval = 200.0, step = 0.1, group = GROUP_TARGET)
+float fixedTp3Points = input.float(13.0, "Fixed TP3 distance ($)", minval = 0.1, maxval = 300.0, step = 0.1, group = GROUP_TARGET)
+float tp1RiskMultiple = input.float(1.0, "Alternative TP1 (R)", minval = 0.25, maxval = 10.0, step = 0.1, group = GROUP_TARGET)
+float tp2RiskMultiple = input.float(2.0, "Alternative TP2 (R)", minval = 0.5, maxval = 15.0, step = 0.1, group = GROUP_TARGET)
+float tp3RiskMultiple = input.float(3.0, "Alternative TP3 (R)", minval = 0.75, maxval = 20.0, step = 0.1, group = GROUP_TARGET)
+float volumeBoostStartsAt = input.float(1.0, "Volume boost starts at (x average)", minval = 0.5, maxval = 3.0, step = 0.05, tooltip = "Relative volume at or below this value adds no target extension.", group = GROUP_TARGET)
+float maximumVolumeTargetBoost = input.float(1.5, "Maximum TP2/TP3 volume boost", minval = 1.0, maxval = 3.0, step = 0.05, tooltip = "Caps target extension. For example, 1.5 changes TP2 from 2R to at most 3R and TP3 from 3R to at most 4.5R.", group = GROUP_TARGET)
+float tp1ClosePercent = input.float(34.0, "Close at TP1 (%)", minval = 5.0, maxval = 90.0, step = 1.0, group = GROUP_TARGET)
+float tp2ClosePercent = input.float(33.0, "Close at TP2 (%)", minval = 5.0, maxval = 90.0, step = 1.0, group = GROUP_TARGET)
+bool moveRemainingStopToEntryAfterTp1 = input.bool(true, "Move TP2/TP3 stop to entry after TP1", tooltip = "After TP1 fills, the stop for the remaining TP2/TP3 position is moved to the original entry price.", group = GROUP_TARGET)
+bool closeNearNewYorkEnd = input.bool(true, "Close near New York trading-day end", group = GROUP_TARGET)
+string sessionTimezone = input.string("America/New_York", "Session timezone", group = GROUP_TARGET)
+string mandatoryCloseSession = input.session("1555-1600", "Mandatory close window", group = GROUP_TARGET)
+
+bool useTradingSessionFilter = input.bool(true, "Restrict new entries to enabled sessions", tooltip = "Only new entries are filtered. Open trades continue to manage SL and targets after their entry session ends.", group = GROUP_SESSION)
+bool tradeAsiaSession = input.bool(false, "Trade Asia session", group = GROUP_SESSION)
+string asiaTradingSession = input.session("0900-1600", "Asia session hours", group = GROUP_SESSION)
+string asiaSessionTimezone = input.string("Asia/Tokyo", "Asia timezone", group = GROUP_SESSION)
+bool tradeLondonSession = input.bool(true, "Trade London session", group = GROUP_SESSION)
+string londonTradingSession = input.session("0800-1600", "London session hours", group = GROUP_SESSION)
+string londonSessionTimezone = input.string("Europe/London", "London timezone", group = GROUP_SESSION)
+bool tradeNewYorkSession = input.bool(true, "Trade New York session", group = GROUP_SESSION)
+string newYorkTradingSession = input.session("0830-1600", "New York session hours", group = GROUP_SESSION)
+string newYorkSessionTimezone = input.string("America/New_York", "New York timezone", group = GROUP_SESSION)
+
+bool showAtrTrailingStop = input.bool(false, "Show internal ATR trailing stop", group = GROUP_VISUAL)
+bool showOptionalContext = input.bool(false, "Show optional EMA/swing context", group = GROUP_VISUAL)
+bool showTradePlans = input.bool(true, "Show historical red/green trade boxes", group = GROUP_VISUAL)
+bool showTargetHitLabels = input.bool(false, "Show TP1/TP2/TP3 hit labels", group = GROUP_VISUAL)
+int tradePlanWidthBars = input.int(24, "Trade-plan width (bars)", minval = 5, maxval = 200, group = GROUP_VISUAL)
+int tradeLabelOffsetBars = input.int(6, "Entry/SL/TP label offset (bars)", minval = 1, maxval = 20, tooltip = "Places price labels near the entry instead of at the far end of the projected box, keeping historical plans visible.", group = GROUP_VISUAL)
+string visibleTradePlans = input.string("Current + previous", "Visible trade plans", options = ["Latest only", "Current + previous", "Recent 3", "Recent 10", "Use retention limit"], tooltip = "Current + previous automatically retains the newest plan and the immediately preceding trade with Entry, SL and all TP levels.", group = GROUP_VISUAL)
+int maximumTradePlans = input.int(20, "Trade-plan retention limit", minval = 1, maxval = 75, group = GROUP_VISUAL)
+bool showDashboard = input.bool(true, "Show dashboard", group = GROUP_VISUAL)
+
+float effectiveTp2ClosePercent = math.min(tp2ClosePercent, 100.0 - tp1ClosePercent)
+float tp3ClosePercent = math.max(0.0, 100.0 - tp1ClosePercent - effectiveTp2ClosePercent)
+int effectiveMaximumTradePlans = visibleTradePlans == "Latest only" ? 1 : visibleTradePlans == "Current + previous" ? 2 : visibleTradePlans == "Recent 3" ? 3 : visibleTradePlans == "Recent 10" ? 10 : maximumTradePlans
+
+bool inAsiaTradingSession = not na(time(timeframe.period, asiaTradingSession, asiaSessionTimezone))
+bool inLondonTradingSession = not na(time(timeframe.period, londonTradingSession, londonSessionTimezone))
+bool inNewYorkTradingSession = not na(time(timeframe.period, newYorkTradingSession, newYorkSessionTimezone))
+bool enabledSessionActive =
+     (tradeAsiaSession and inAsiaTradingSession) or
+     (tradeLondonSession and inLondonTradingSession) or
+     (tradeNewYorkSession and inNewYorkTradingSession)
+bool tradingSessionAccepted = not useTradingSessionFilter or enabledSessionActive
+
+// =============================================================================
+// ATR TRAILING-STOP REVERSAL ENGINE
+// =============================================================================
+float atr = ta.atr(atrLength)
+float heikinAshiClose = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+float signalSource = signalSourceMode == "Heikin-Ashi close" ? heikinAshiClose : close
+float atrLoss = atr * atrSensitivity
+
+var float atrTrailingStop = na
+float previousAtrTrailingStop = nz(atrTrailingStop[1], signalSource)
+
+atrTrailingStop :=
+     signalSource > previousAtrTrailingStop and signalSource[1] > previousAtrTrailingStop ?
+         math.max(previousAtrTrailingStop, signalSource - atrLoss) :
+     signalSource < previousAtrTrailingStop and signalSource[1] < previousAtrTrailingStop ?
+         math.min(previousAtrTrailingStop, signalSource + atrLoss) :
+     signalSource > previousAtrTrailingStop ?
+         signalSource - atrLoss :
+         signalSource + atrLoss
+
+bool atrBullishDirection = signalSource > atrTrailingStop
+// Pine v6 bool values are always true/false and cannot be passed to na().
+// Guard the historical reference with bar_index instead.
+bool atrDirectionChanged = bar_index > 0 and atrBullishDirection != atrBullishDirection[1]
+var int atrDirectionStartBar = na
+if na(atrDirectionStartBar) or atrDirectionChanged
+    atrDirectionStartBar := bar_index
+int barsInAtrDirection = bar_index - atrDirectionStartBar + 1
+
+// Emit one signal only after the new ATR direction has survived the requested
+// number of completed closes. This removes one-candle whipsaw reversals.
+bool rawBuyReversal = barstate.isconfirmed and atrBullishDirection and barsInAtrDirection == directionConfirmationBars
+bool rawSellReversal = barstate.isconfirmed and not atrBullishDirection and barsInAtrDirection == directionConfirmationBars
+
+// =============================================================================
+// OPTIONAL CONTEXT — DISABLED BY DEFAULT
+// =============================================================================
+float confirmedPivotHigh = ta.pivothigh(high, swingLength, swingLength)
+float confirmedPivotLow = ta.pivotlow(low, swingLength, swingLength)
+var float lastSwingHigh = na
+var float lastSwingLow = na
+var int structureBias = 0
+
+if not na(confirmedPivotHigh)
+    lastSwingHigh := confirmedPivotHigh
+if not na(confirmedPivotLow)
+    lastSwingLow := confirmedPivotLow
+
+bool bullishStructureBreak = not na(lastSwingHigh) and close > lastSwingHigh and close[1] <= lastSwingHigh
+bool bearishStructureBreak = not na(lastSwingLow) and close < lastSwingLow and close[1] >= lastSwingLow
+if bullishStructureBreak and not bearishStructureBreak
+    structureBias := 1
+else if bearishStructureBreak and not bullishStructureBreak
+    structureBias := -1
+
+// Responsive, non-repainting structure used by the live-style entry model.
+// The current close is compared only with completed prior candles.
+float priorStructureHigh = ta.highest(high[1], liveStructureLookback)
+float priorStructureLow = ta.lowest(low[1], liveStructureLookback)
+bool rollingBullishBreak = barstate.isconfirmed and not na(priorStructureHigh) and close > priorStructureHigh
+bool rollingBearishBreak = barstate.isconfirmed and not na(priorStructureLow) and close < priorStructureLow
+bool newRollingBullishBreak = rollingBullishBreak and not rollingBullishBreak[1]
+bool newRollingBearishBreak = rollingBearishBreak and not rollingBearishBreak[1]
+var int liveStructureBias = 0
+if newRollingBullishBreak and not newRollingBearishBreak
+    liveStructureBias := 1
+else if newRollingBearishBreak and not newRollingBullishBreak
+    liveStructureBias := -1
+float liveTrendEma = ta.ema(close, liveTrendEmaLength)
+
+float completedHtfClose = request.security(syminfo.tickerid, higherTimeframe, close[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+float completedHtfEma = request.security(syminfo.tickerid, higherTimeframe, ta.ema(close, higherTimeframeEmaLength)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+bool htfBullish = completedHtfClose > completedHtfEma
+bool htfBearish = completedHtfClose < completedHtfEma
+
+bool newBullishFvg = bar_index >= 2 and low > high[2] and low - high[2] >= atr * minimumFvgATR
+bool newBearishFvg = bar_index >= 2 and high < low[2] and low[2] - high >= atr * minimumFvgATR
+var int lastBullishFvgBar = na
+var int lastBearishFvgBar = na
+if newBullishFvg
+    lastBullishFvgBar := bar_index
+if newBearishFvg
+    lastBearishFvgBar := bar_index
+bool recentBullishFvg = not na(lastBullishFvgBar) and bar_index - lastBullishFvgBar <= fvgValidBars
+bool recentBearishFvg = not na(lastBearishFvgBar) and bar_index - lastBearishFvgBar <= fvgValidBars
+
+float averageVolume = ta.sma(volume, volumeLookback)
+float relativeVolume = not na(volume) and volume > 0 and not na(averageVolume) and averageVolume > 0 ? volume / averageVolume : 1.0
+float volumeTargetBoost = targetCalculationMode == "Volume-adjusted risk" ? math.min(maximumVolumeTargetBoost, 1.0 + math.max(0.0, relativeVolume - volumeBoostStartsAt)) : 1.0
+bool bullishVolume = close > open and relativeVolume >= minimumRelativeVolume
+bool bearishVolume = close < open and relativeVolume >= minimumRelativeVolume
+
+bool longContextAccepted =
+     (not useStructureFilter or structureBias == 1) and
+     (not useHigherTimeframeFilter or htfBullish) and
+     (not useRecentFvgFilter or recentBullishFvg) and
+     (not useVolumeFilter or bullishVolume)
+
+bool shortContextAccepted =
+     (not useStructureFilter or structureBias == -1) and
+     (not useHigherTimeframeFilter or htfBearish) and
+     (not useRecentFvgFilter or recentBearishFvg) and
+     (not useVolumeFilter or bearishVolume)
+
+// =============================================================================
+// PREVIOUS-CANDLE SL AND ENTRY QUALIFICATION
+// =============================================================================
+var int lastEntryBar = na
+var int lastExitBar = na
+bool entryCooldownPassed = na(lastEntryBar) or bar_index - lastEntryBar >= entryCooldownBars
+bool justBecameFlatBeforeEntry = strategy.position_size == 0 and strategy.position_size[1] != 0
+bool postExitCooldownPassed = not justBecameFlatBeforeEntry and (na(lastExitBar) or bar_index - lastExitBar >= postExitCooldownBars)
+
+float candidateLongStop = low[1] - previousCandleStopBuffer
+float candidateShortStop = high[1] + previousCandleStopBuffer
+float candidateLongRisk = close - candidateLongStop
+float candidateShortRisk = candidateShortStop - close
+bool longStopValid = candidateLongRisk > syminfo.mintick and (not useMaximumStopFilter or candidateLongRisk <= atr * maximumStopATR)
+bool shortStopValid = candidateShortRisk > syminfo.mintick and (not useMaximumStopFilter or candidateShortRisk <= atr * maximumStopATR)
+
+bool canEnterLong = strategy.position_size == 0 or reverseOnOppositeSignal and strategy.position_size < 0
+bool canEnterShort = strategy.position_size == 0 or reverseOnOppositeSignal and strategy.position_size > 0
+
+// A fresh structure break starts a major setup. A later confirmed ATR reversal
+// in the same established structure permits a continuation trade after pullback.
+bool liveLongTrigger = atrBullishDirection and barsInAtrDirection >= directionConfirmationBars and liveStructureBias == 1 and close > liveTrendEma and (newRollingBullishBreak or rawBuyReversal)
+bool liveShortTrigger = not atrBullishDirection and barsInAtrDirection >= directionConfirmationBars and liveStructureBias == -1 and close < liveTrendEma and (newRollingBearishBreak or rawSellReversal)
+bool selectedLongTrigger = entryModel == "Live structure" ? liveLongTrigger : rawBuyReversal
+bool selectedShortTrigger = entryModel == "Live structure" ? liveShortTrigger : rawSellReversal
+
+bool longEntrySignal = selectedLongTrigger and tradingSessionAccepted and entryCooldownPassed and postExitCooldownPassed and longContextAccepted and longStopValid and canEnterLong
+bool shortEntrySignal = selectedShortTrigger and tradingSessionAccepted and entryCooldownPassed and postExitCooldownPassed and shortContextAccepted and shortStopValid and canEnterShort
+
+// =============================================================================
+// VISUAL TRADE PLANS
+// =============================================================================
+var array<box> tradeBoxes = array.new<box>()
+var array<line> tradeLines = array.new<line>()
+var array<label> tradeLabels = array.new<label>()
+
+f_drawTradePlan(bool isLong, float entryPrice, float stopPrice, float tp1Price, float tp2Price, float tp3Price) =>
+    if showTradePlans
+        int rightEdge = bar_index + tradePlanWidthBars
+        int labelEdge = bar_index + math.min(tradeLabelOffsetBars, tradePlanWidthBars)
+        color directionColor = isLong ? color.rgb(0, 155, 95) : color.rgb(225, 65, 75)
+        color targetColor = color.rgb(55, 185, 95)
+        color entryColor = color.rgb(95, 105, 120)
+
+        box riskBox = box.new(bar_index, isLong ? entryPrice : stopPrice, rightEdge, isLong ? stopPrice : entryPrice, xloc = xloc.bar_index, border_color = color.new(color.red, 15), bgcolor = color.new(color.red, 72))
+        box rewardBox = box.new(bar_index, isLong ? tp3Price : entryPrice, rightEdge, isLong ? entryPrice : tp3Price, xloc = xloc.bar_index, border_color = color.new(targetColor, 20), bgcolor = color.new(targetColor, 75))
+        line entryLine = line.new(bar_index, entryPrice, rightEdge, entryPrice, xloc = xloc.bar_index, color = entryColor, width = 2)
+        line stopLine = line.new(bar_index, stopPrice, rightEdge, stopPrice, xloc = xloc.bar_index, color = color.red, width = 2)
+        line tp1Line = line.new(bar_index, tp1Price, rightEdge, tp1Price, xloc = xloc.bar_index, color = targetColor, width = 2)
+        line tp2Line = line.new(bar_index, tp2Price, rightEdge, tp2Price, xloc = xloc.bar_index, color = targetColor, width = 2)
+        line tp3Line = line.new(bar_index, tp3Price, rightEdge, tp3Price, xloc = xloc.bar_index, color = targetColor, width = 2)
+
+        label signalLabel = label.new(bar_index, isLong ? low : high, isLong ? "Buy" : "Sell", xloc = xloc.bar_index, style = isLong ? label.style_label_up : label.style_label_down, color = directionColor, textcolor = color.white, size = size.tiny)
+        label entryLabel = label.new(labelEdge, entryPrice, "Entry (" + str.tostring(entryPrice, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = entryColor, textcolor = color.white, size = size.tiny)
+        label stopLabel = label.new(labelEdge, stopPrice, "SL (" + str.tostring(stopPrice, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.red, textcolor = color.white, size = size.tiny)
+        label tp1Label = label.new(labelEdge, tp1Price, "TP1 (" + str.tostring(tp1Price, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = targetColor, textcolor = color.white, size = size.tiny)
+        label tp2Label = label.new(labelEdge, tp2Price, "TP2 (" + str.tostring(tp2Price, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = targetColor, textcolor = color.white, size = size.tiny)
+        label tp3Label = label.new(labelEdge, tp3Price, "TP3 (" + str.tostring(tp3Price, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = targetColor, textcolor = color.white, size = size.tiny)
+
+        array.push(tradeBoxes, riskBox)
+        array.push(tradeBoxes, rewardBox)
+        array.push(tradeLines, entryLine)
+        array.push(tradeLines, stopLine)
+        array.push(tradeLines, tp1Line)
+        array.push(tradeLines, tp2Line)
+        array.push(tradeLines, tp3Line)
+        array.push(tradeLabels, signalLabel)
+        array.push(tradeLabels, entryLabel)
+        array.push(tradeLabels, stopLabel)
+        array.push(tradeLabels, tp1Label)
+        array.push(tradeLabels, tp2Label)
+        array.push(tradeLabels, tp3Label)
+
+        while array.size(tradeBoxes) > effectiveMaximumTradePlans * 2
+            box.delete(array.shift(tradeBoxes))
+        while array.size(tradeLines) > effectiveMaximumTradePlans * 5
+            line.delete(array.shift(tradeLines))
+        while array.size(tradeLabels) > effectiveMaximumTradePlans * 6
+            label.delete(array.shift(tradeLabels))
+
+f_moveLatestPlanStopToBreakeven(float entryPrice) =>
+    if showTradePlans and array.size(tradeLines) >= 5 and array.size(tradeLabels) >= 6
+        // Each plan stores lines as Entry, SL, TP1, TP2, TP3 and labels as
+        // Signal, Entry, SL, TP1, TP2, TP3. Update the newest plan's SL.
+        line latestStopLine = array.get(tradeLines, array.size(tradeLines) - 4)
+        label latestStopLabel = array.get(tradeLabels, array.size(tradeLabels) - 4)
+        line.set_y1(latestStopLine, entryPrice)
+        line.set_y2(latestStopLine, entryPrice)
+        line.set_color(latestStopLine, color.orange)
+        label.set_y(latestStopLabel, entryPrice)
+        label.set_text(latestStopLabel, "SL → BE (" + str.tostring(entryPrice, format.mintick) + ")")
+        label.set_color(latestStopLabel, color.orange)
+
+// =============================================================================
+// ORDERS AND TARGET TRACKING
+// =============================================================================
+var float activeEntry = na
+var float activeStop = na
+var float activeTp1 = na
+var float activeTp2 = na
+var float activeTp3 = na
+var int activeDirection = 0
+var bool tp1Hit = false
+var bool tp2Hit = false
+var bool tp3Hit = false
+var int submittedPositions = 0
+
+if longEntrySignal and not shortEntrySignal
+    float entryPrice = close
+    float stopPrice = candidateLongStop
+    float riskDistance = entryPrice - stopPrice
+    float tp1Distance = targetCalculationMode == "Fixed gold points" ? fixedTp1Points : riskDistance * tp1RiskMultiple
+    float tp2Distance = targetCalculationMode == "Fixed gold points" ? fixedTp2Points : riskDistance * tp2RiskMultiple * volumeTargetBoost
+    float tp3Distance = targetCalculationMode == "Fixed gold points" ? fixedTp3Points : riskDistance * tp3RiskMultiple * volumeTargetBoost
+    float minimumTargetDistance = math.min(tp1Distance, math.min(tp2Distance, tp3Distance))
+    float maximumTargetDistance = math.max(tp1Distance, math.max(tp2Distance, tp3Distance))
+    float middleTargetDistance = tp1Distance + tp2Distance + tp3Distance - minimumTargetDistance - maximumTargetDistance
+    activeEntry := entryPrice
+    activeStop := stopPrice
+    activeTp1 := entryPrice + minimumTargetDistance
+    activeTp2 := entryPrice + middleTargetDistance
+    activeTp3 := entryPrice + maximumTargetDistance
+    activeDirection := 1
+    tp1Hit := false
+    tp2Hit := false
+    tp3Hit := false
+    lastEntryBar := bar_index
+    submittedPositions += 1
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long TP1", from_entry = "Long", stop = activeStop, limit = activeTp1, qty_percent = tp1ClosePercent)
+    strategy.exit("Long TP2", from_entry = "Long", stop = activeStop, limit = activeTp2, qty_percent = effectiveTp2ClosePercent)
+    if tp3ClosePercent > 0
+        strategy.exit("Long TP3", from_entry = "Long", stop = activeStop, limit = activeTp3, qty_percent = tp3ClosePercent)
+    f_drawTradePlan(true, activeEntry, activeStop, activeTp1, activeTp2, activeTp3)
+
+else if shortEntrySignal
+    float entryPrice = close
+    float stopPrice = candidateShortStop
+    float riskDistance = stopPrice - entryPrice
+    float tp1Distance = targetCalculationMode == "Fixed gold points" ? fixedTp1Points : riskDistance * tp1RiskMultiple
+    float tp2Distance = targetCalculationMode == "Fixed gold points" ? fixedTp2Points : riskDistance * tp2RiskMultiple * volumeTargetBoost
+    float tp3Distance = targetCalculationMode == "Fixed gold points" ? fixedTp3Points : riskDistance * tp3RiskMultiple * volumeTargetBoost
+    float minimumTargetDistance = math.min(tp1Distance, math.min(tp2Distance, tp3Distance))
+    float maximumTargetDistance = math.max(tp1Distance, math.max(tp2Distance, tp3Distance))
+    float middleTargetDistance = tp1Distance + tp2Distance + tp3Distance - minimumTargetDistance - maximumTargetDistance
+    activeEntry := entryPrice
+    activeStop := stopPrice
+    activeTp1 := entryPrice - minimumTargetDistance
+    activeTp2 := entryPrice - middleTargetDistance
+    activeTp3 := entryPrice - maximumTargetDistance
+    activeDirection := -1
+    tp1Hit := false
+    tp2Hit := false
+    tp3Hit := false
+    lastEntryBar := bar_index
+    submittedPositions += 1
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short TP1", from_entry = "Short", stop = activeStop, limit = activeTp1, qty_percent = tp1ClosePercent)
+    strategy.exit("Short TP2", from_entry = "Short", stop = activeStop, limit = activeTp2, qty_percent = effectiveTp2ClosePercent)
+    if tp3ClosePercent > 0
+        strategy.exit("Short TP3", from_entry = "Short", stop = activeStop, limit = activeTp3, qty_percent = tp3ClosePercent)
+    f_drawTradePlan(false, activeEntry, activeStop, activeTp1, activeTp2, activeTp3)
+
+if not longEntrySignal and not shortEntrySignal
+    if strategy.position_size > 0 and activeDirection == 1
+        if not tp1Hit and high >= activeTp1
+            tp1Hit := true
+            if moveRemainingStopToEntryAfterTp1
+                f_moveLatestPlanStopToBreakeven(activeEntry)
+            if showTargetHitLabels
+                label.new(bar_index, activeTp1, "TP1", style = label.style_label_down, color = color.rgb(55, 185, 95), textcolor = color.white, size = size.tiny)
+        if not tp2Hit and high >= activeTp2
+            tp2Hit := true
+            if showTargetHitLabels
+                label.new(bar_index, activeTp2, "TP2", style = label.style_label_down, color = color.rgb(55, 185, 95), textcolor = color.white, size = size.tiny)
+        if not tp3Hit and high >= activeTp3
+            tp3Hit := true
+            if showTargetHitLabels
+                label.new(bar_index, activeTp3, "TP3", style = label.style_label_down, color = color.rgb(55, 185, 95), textcolor = color.white, size = size.tiny)
+        float managedStop = moveRemainingStopToEntryAfterTp1 and tp1Hit ? math.max(activeStop, activeEntry) : activeStop
+        if not tp1Hit
+            strategy.exit("Long TP1", from_entry = "Long", stop = activeStop, limit = activeTp1, qty_percent = tp1ClosePercent)
+        if not tp2Hit
+            strategy.exit("Long TP2", from_entry = "Long", stop = managedStop, limit = activeTp2, qty_percent = effectiveTp2ClosePercent)
+        if tp3ClosePercent > 0 and not tp3Hit
+            strategy.exit("Long TP3", from_entry = "Long", stop = managedStop, limit = activeTp3, qty_percent = tp3ClosePercent)
+
+    if strategy.position_size < 0 and activeDirection == -1
+        if not tp1Hit and low <= activeTp1
+            tp1Hit := true
+            if moveRemainingStopToEntryAfterTp1
+                f_moveLatestPlanStopToBreakeven(activeEntry)
+            if showTargetHitLabels
+                label.new(bar_index, activeTp1, "TP1", style = label.style_label_up, color = color.rgb(55, 185, 95), textcolor = color.white, size = size.tiny)
+        if not tp2Hit and low <= activeTp2
+            tp2Hit := true
+            if showTargetHitLabels
+                label.new(bar_index, activeTp2, "TP2", style = label.style_label_up, color = color.rgb(55, 185, 95), textcolor = color.white, size = size.tiny)
+        if not tp3Hit and low <= activeTp3
+            tp3Hit := true
+            if showTargetHitLabels
+                label.new(bar_index, activeTp3, "TP3", style = label.style_label_up, color = color.rgb(55, 185, 95), textcolor = color.white, size = size.tiny)
+        float managedStop = moveRemainingStopToEntryAfterTp1 and tp1Hit ? math.min(activeStop, activeEntry) : activeStop
+        if not tp1Hit
+            strategy.exit("Short TP1", from_entry = "Short", stop = activeStop, limit = activeTp1, qty_percent = tp1ClosePercent)
+        if not tp2Hit
+            strategy.exit("Short TP2", from_entry = "Short", stop = managedStop, limit = activeTp2, qty_percent = effectiveTp2ClosePercent)
+        if tp3ClosePercent > 0 and not tp3Hit
+            strategy.exit("Short TP3", from_entry = "Short", stop = managedStop, limit = activeTp3, qty_percent = tp3ClosePercent)
+
+bool inMandatoryClose = not na(time(timeframe.period, mandatoryCloseSession, sessionTimezone))
+if closeNearNewYorkEnd and inMandatoryClose and strategy.position_size != 0
+    strategy.close_all(comment = "Mandatory close")
+
+bool positionJustClosed = strategy.position_size == 0 and strategy.position_size[1] != 0
+if positionJustClosed
+    lastExitBar := bar_index
+if positionJustClosed and not longEntrySignal and not shortEntrySignal
+    activeEntry := na
+    activeStop := na
+    activeTp1 := na
+    activeTp2 := na
+    activeTp3 := na
+    activeDirection := 0
+    tp1Hit := false
+    tp2Hit := false
+    tp3Hit := false
+
+// =============================================================================
+// PLOTS, ALERTS, AND DASHBOARD
+// =============================================================================
+plot(showAtrTrailingStop ? atrTrailingStop : na, "Internal ATR trailing stop", color = signalSource > atrTrailingStop ? color.teal : color.red, linewidth = 2, style = plot.style_linebr)
+plot(showOptionalContext ? liveTrendEma : na, "Live trend EMA", color = color.purple, linewidth = 2)
+plot(showOptionalContext ? completedHtfEma : na, "Completed HTF EMA", color = color.orange, linewidth = 2)
+plot(showOptionalContext ? lastSwingHigh : na, "Confirmed swing high", color = color.new(color.red, 65), style = plot.style_linebr)
+plot(showOptionalContext ? lastSwingLow : na, "Confirmed swing low", color = color.new(color.teal, 65), style = plot.style_linebr)
+plotshape(longEntrySignal, title = "Buy confirmed", text = "Buy", style = shape.labelup, location = location.belowbar, color = color.rgb(0, 155, 95), textcolor = color.white, size = size.tiny)
+plotshape(shortEntrySignal, title = "Sell confirmed", text = "Sell", style = shape.labeldown, location = location.abovebar, color = color.rgb(225, 65, 75), textcolor = color.white, size = size.tiny)
+
+alertcondition(longEntrySignal, title = "SK live-style BUY", message = "Confirmed ATR trailing-stop BUY. SL uses the previous candle.")
+alertcondition(shortEntrySignal, title = "SK live-style SELL", message = "Confirmed ATR trailing-stop SELL. SL uses the previous candle.")
+
+var table dashboard = table.new(position.top_right, 2, 12, border_width = 1)
+if barstate.islast
+    float lossMagnitude = math.abs(strategy.grossloss)
+    float profitFactor = lossMagnitude > 0 ? strategy.grossprofit / lossMagnitude : na
+    bool correctTimeframe = timeframe.isminutes and timeframe.multiplier == 5
+    string filterSummary =
+         (useStructureFilter ? "S" : "") +
+         (useHigherTimeframeFilter ? "H" : "") +
+         (useRecentFvgFilter ? "F" : "") +
+         (useVolumeFilter ? "V" : "")
+
+    table.cell(dashboard, 0, 0, "SK LIVE-STYLE v2.8", text_color = color.white, bgcolor = color.rgb(35, 75, 145))
+    table.cell(dashboard, 1, 0, correctTimeframe ? "XAUUSD 5m" : "USE 5m", text_color = color.white, bgcolor = correctTimeframe ? color.rgb(0, 145, 105) : color.rgb(205, 120, 30))
+    table.cell(dashboard, 0, 1, "ATR direction")
+    table.cell(dashboard, 1, 1, signalSource > atrTrailingStop ? "BULLISH" : "BEARISH")
+    table.cell(dashboard, 0, 2, "Entry model")
+    table.cell(dashboard, 1, 2, entryModel)
+    table.cell(dashboard, 0, 3, "Stop rule")
+    table.cell(dashboard, 1, 3, "PREVIOUS CANDLE")
+    table.cell(dashboard, 0, 4, "Target rule")
+    table.cell(dashboard, 1, 4, targetCalculationMode)
+    table.cell(dashboard, 0, 5, "TP distances")
+    table.cell(dashboard, 1, 5, targetCalculationMode == "Fixed gold points" ? str.tostring(fixedTp1Points, "#.#") + " / " + str.tostring(fixedTp2Points, "#.#") + " / " + str.tostring(fixedTp3Points, "#.#") : str.tostring(tp1RiskMultiple, "#.#") + "R / " + str.tostring(tp2RiskMultiple * volumeTargetBoost, "#.##") + "R / " + str.tostring(tp3RiskMultiple * volumeTargetBoost, "#.##") + "R")
+    table.cell(dashboard, 0, 6, "Context filters")
+    table.cell(dashboard, 1, 6, filterSummary == "" ? "OFF (LIVE STYLE)" : filterSummary)
+    table.cell(dashboard, 0, 7, "Relative volume")
+    table.cell(dashboard, 1, 7, str.tostring(relativeVolume, "#.00") + "x")
+    table.cell(dashboard, 0, 8, "Position")
+    table.cell(dashboard, 1, 8, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT")
+    table.cell(dashboard, 0, 9, "Submitted positions")
+    table.cell(dashboard, 1, 9, str.tostring(submittedPositions))
+    table.cell(dashboard, 0, 10, "Profit factor")
+    table.cell(dashboard, 1, 10, na(profitFactor) ? "N/A" : str.tostring(profitFactor, "#.###"))
+    table.cell(dashboard, 0, 11, "Status")
+    table.cell(dashboard, 1, 11, longEntrySignal ? "BUY" : shortEntrySignal ? "SELL" : useTradingSessionFilter and not enabledSessionActive ? "SESSION OFF" : "SCANNING")
+
+    if not showDashboard
+        table.clear(dashboard, 0, 0, 1, 11)
